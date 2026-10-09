@@ -18,7 +18,15 @@ const DIST = path.join(ROOT, "dist");
 const EXE_NAME = "赛博女友.exe";
 
 // 内嵌进 exe 的只读文件（打包后 exe 就不依赖这些外部文件了）
-const EMBED = ["public/index.html", "public/style.css", "public/app.js", "assets/character.jpg"];
+// assets/1791525005312.jpg 是内置默认角色「大肥鱼」的形象图，
+// 必须一起内嵌，否则换台机器装上就只有空头像（GitHub raw 在国内还打不开）。
+const EMBED = [
+  "public/index.html",
+  "public/style.css",
+  "public/app.js",
+  "assets/character.jpg",
+  "assets/1791525005312.jpg"
+];
 
 function log(...a) {
   console.log("  " + a.join(" "));

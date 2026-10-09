@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import selfsigned from "selfsigned";
 import { voiceLabel, providerFor } from "./src/voice-catalog.js";
 import EMBEDDED from "./src/embedded-assets.js";
+import DEFAULT_CHARACTER from "./defaults/default-character.json" with { type: "json" };
 
 const execFileP = promisify(execFile);
 
@@ -45,6 +46,20 @@ const API_BASE = "https://api.vivix.ai/v1";
 const ASSET_RE = /\.(jpe?g|png|webp|gif)$/i;
 
 // ---------------- 配置 ----------------
+// 内置默认角色 = 「大肥鱼」（含完整人设 + 运镜设定），定义在 defaults/default-character.json。
+// 之所以要单独放一个文件：角色库里的默认角色必须来自程序自带的数据，
+// 不能依赖本机的 config.json —— 否则换台机器装上就是空的。
+// build-exe.mjs 会用 esbuild 把这个 JSON 直接内联进二进制，独立 exe 里也读得到。
+const DEFAULT_CHARACTER_ID = "c_default";
+
+// 旧版本内置过的占位角色（阿甜，人设 50 字、运镜全空），首次启动时清掉，
+// 避免老用户的角色列表里留着一个空壳角色。
+function isLegacyPlaceholder(rec) {
+  const ch = rec?.config?.character;
+  if (!ch) return false;
+  return (rec.name === "阿甜" || ch.name === "阿甜") && /^你是「阿甜」/.test(ch.persona || "");
+}
+
 const DEFAULTS = {
   api_key: "",
   public_base_url: "",
@@ -53,22 +68,7 @@ const DEFAULTS = {
   https_port: 3443,
   lan_access: true,
   model: "vivix-a1-stream",
-  output: { aspect_ratio: "9:16", resolution: "720p" },
-  character: {
-    avatar_id: "girlfriend",
-    name: "阿甜",
-    persona: "你是「阿甜」，20 岁的广东女生，是用户的女朋友，你们正在恋爱中。回复简短自然，只输出要说出口的话。",
-    opening_line: "宝宝怎么啦",
-    source_image: {
-      source_image_id: "front",
-      url: "./assets/character.jpg",
-      media_type: "image/jpeg",
-      description: "",
-      local_path: ""
-    }
-  },
-  voice: { tts_voice_id: "longanlingxi", speed: 1, tts_provider: "", tts_model_id: "", tts_api_key: "" },
-  motion: { speaking_prompt: "", listening_prompt: "" },
+  ...structuredClone(DEFAULT_CHARACTER),
   session: { max_duration_seconds: 1200, auto_close_seconds: 60, recording_mode: "off" }
 };
 
@@ -189,15 +189,40 @@ function newRecord(name, cfg) {
   };
 }
 
+// 内置默认角色记录（id 固定，方便认出来）
+function defaultCharacterRecord() {
+  const now = new Date().toISOString();
+  return {
+    id: DEFAULT_CHARACTER_ID,
+    name: DEFAULT_CHARACTER.character.name,
+    created_at: now,
+    updated_at: now,
+    builtin: true,
+    config: structuredClone(DEFAULT_CHARACTER)
+  };
+}
+
 async function loadLibrary() {
   let lib;
   try {
     lib = JSON.parse(await readFile(LIBRARY_PATH, "utf8"));
     if (!lib || !Array.isArray(lib.characters)) throw new Error("格式不对");
   } catch {
-    // 首次运行：把当前 config.json 里的角色收进角色库，用户一打开就能看到它
-    const cfg = await loadConfig();
-    lib = { version: 1, characters: [newRecord(cfg.character?.name || "默认角色", cfg)] };
+    // 首次运行：直接写入内置默认角色（大肥鱼，带完整人设与运镜设定），
+    // 不依赖 config.json，保证换台机器装上也是开箱即用
+    lib = { version: 2, default_id: DEFAULT_CHARACTER_ID, characters: [defaultCharacterRecord()] };
+    await persistLibrary(lib);
+    return lib;
+  }
+  // 一次性自愈（v1 → v2）：清掉旧版内置的占位角色「阿甜」（人设 50 字、运镜全空），
+  // 并把内置默认角色补进库里。跑过一次就不再动了，之后角色列表完全归用户管。
+  if (!(Number(lib.version) >= 2)) {
+    lib.characters = lib.characters.filter((c) => !isLegacyPlaceholder(c));
+    if (!lib.characters.some((c) => c.id === DEFAULT_CHARACTER_ID)) {
+      lib.characters.unshift(defaultCharacterRecord());
+    }
+    lib.version = 2;
+    lib.default_id = DEFAULT_CHARACTER_ID;
     await persistLibrary(lib);
   }
   return lib;
