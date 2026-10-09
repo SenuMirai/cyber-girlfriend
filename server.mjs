@@ -13,13 +13,34 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import selfsigned from "selfsigned";
 import { voiceLabel, providerFor } from "./src/voice-catalog.js";
+import EMBEDDED from "./src/embedded-assets.js";
 
 const execFileP = promisify(execFile);
 
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const CONFIG_PATH = path.join(ROOT, "config.json");
-const LIBRARY_PATH = path.join(ROOT, "characters.json");
-const UPLOAD_DIR = path.join(ROOT, "assets", "uploads");
+// 应用自身所在目录：源码模式=项目目录；打包成独立 exe 后=exe 所在目录
+const ROOT = (() => {
+  try {
+    return path.dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return path.dirname(process.execPath);
+  }
+})();
+
+// 进程不是 node 本体，说明是被打包成独立 exe 在跑（打包后没有源码目录可写）
+const IS_SEA = !/^node(\.exe)?$/i.test(path.basename(process.execPath));
+
+// 可写数据目录：
+//   · 源码模式 → 就是项目目录（保持原样，你现有的 config.json / 角色 / 图片都不用搬）
+//   · 独立 exe → %LOCALAPPDATA%\赛博女友（放 Program Files 里也能写，不需要管理员权限）
+const DATA_ROOT = process.env.CG_DATA_DIR
+  ? path.resolve(process.env.CG_DATA_DIR)
+  : IS_SEA
+    ? path.join(process.env.LOCALAPPDATA || os.homedir(), "赛博女友")
+    : ROOT;
+
+const CONFIG_PATH = path.join(DATA_ROOT, "config.json");
+const LIBRARY_PATH = path.join(DATA_ROOT, "characters.json");
+const UPLOAD_DIR = path.join(DATA_ROOT, "assets", "uploads");
 const API_BASE = "https://api.vivix.ai/v1";
 const ASSET_RE = /\.(jpe?g|png|webp|gif)$/i;
 
@@ -72,7 +93,7 @@ async function loadConfig() {
   return cfg;
 }
 
-// 预览要跟 Vivix 实际用的那张图一致，所以以 url 的文件名为准去 assets 里认领本地副本
+// 预览要跟 Vivix 实际用的那张图一致，所以以 url 的文件名为准去认领本地副本
 // （GitHub raw 在国内经常打不开，有本地副本预览才稳）；找不到就清空，避免指向不存在的文件。
 function repairLocalPath(cfg) {
   const img = cfg.character?.source_image;
@@ -82,13 +103,15 @@ function repairLocalPath(cfg) {
   const base = path.basename((img.url || "").split("?")[0]);
   if (base && ASSET_RE.test(base)) {
     for (const rel of [`assets/uploads/${base}`, `assets/${base}`]) {
-      if (existsSync(path.join(ROOT, rel))) {
+      if (existsSync(path.join(DATA_ROOT, rel)) || existsSync(path.join(ROOT, rel)) || EMBEDDED[rel]) {
         next = rel;
         break;
       }
     }
   }
-  if (!next && before && existsSync(path.join(ROOT, before))) next = before;
+  if (!next && before && (existsSync(path.join(DATA_ROOT, before)) || existsSync(path.join(ROOT, before)))) {
+    next = before;
+  }
   if (next === before) return false;
   img.local_path = next;
   return true;
@@ -320,15 +343,87 @@ async function waitForPublic(url, tries = 10, delayMs = 1500) {
   return false;
 }
 
+// ---- 方案 B：用 GitHub Token 直接走 REST API（打包给别人用时不需要装 gh 命令行）----
+function ghToken() {
+  return (process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "").trim();
+}
+
+function ghHeaders(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "User-Agent": "cyber-girlfriend",
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+}
+
+let ghRestCache = null;
+
+async function ghRestTarget(token) {
+  if (ghRestCache) return ghRestCache;
+  const meRes = await fetch("https://api.github.com/user", { headers: ghHeaders(token) });
+  if (!meRes.ok) throw httpError(400, `GitHub Token 无效或权限不足（HTTP ${meRes.status}）`);
+  const owner = (await meRes.json()).login;
+  const repoName = (process.env.GITHUB_REPO || `${owner}/${GH_REPO}`).trim();
+  const slug = repoName.includes("/") ? repoName : `${owner}/${repoName}`;
+  const infoRes = await fetch(`https://api.github.com/repos/${slug}`, { headers: ghHeaders(token) });
+  if (infoRes.status === 404) {
+    const createRes = await fetch("https://api.github.com/user/repos", {
+      method: "POST",
+      headers: { ...ghHeaders(token), "Content-Type": "application/json" },
+      body: JSON.stringify({ name: slug.split("/")[1], description: "赛博女友 · 角色素材", private: false })
+    });
+    if (!createRes.ok) {
+      throw httpError(400, `自动创建仓库 ${slug} 失败（HTTP ${createRes.status}）：请手动建一个公开仓库，或用 GITHUB_REPO 指定已存在的仓库`);
+    }
+  } else if (!infoRes.ok) {
+    throw httpError(400, `读取仓库 ${slug} 失败（HTTP ${infoRes.status}）`);
+  }
+  const info = infoRes.ok ? await infoRes.json() : {};
+  ghRestCache = { slug, branch: info.default_branch || "main" };
+  return ghRestCache;
+}
+
+async function ghRestUpload(token, slug, branch, remotePath, buf) {
+  const api = `https://api.github.com/repos/${slug}/contents/${remotePath}`;
+  let sha = "";
+  try {
+    const r = await fetch(`${api}?ref=${encodeURIComponent(branch)}`, { headers: ghHeaders(token) });
+    if (r.ok) sha = (await r.json()).sha || "";
+  } catch { /* 文件不存在则新建 */ }
+  const body = { message: `upload ${remotePath}`, content: buf.toString("base64") };
+  if (sha) body.sha = sha;
+  else body.branch = branch;
+  const res = await fetch(api, {
+    method: "PUT",
+    headers: { ...ghHeaders(token), "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw httpError(502, `上传到 GitHub 失败（HTTP ${res.status}）${text ? "：" + text.slice(0, 180) : ""}`);
+  }
+}
+
 async function publishImage(localPath, fileName) {
+  const remotePath = `characters/${fileName}`;
+  const token = ghToken();
+
+  // 优先后端：有 Token 就用 REST（不依赖本机装 gh），否则退回 gh 命令行
+  if (token) {
+    const { slug, branch } = await ghRestTarget(token);
+    await ghRestUpload(token, slug, branch, remotePath, await readFile(localPath));
+    const publicUrl = `https://raw.githubusercontent.com/${slug}/${branch}/${remotePath}`;
+    return { publicUrl, verified: await waitForPublic(publicUrl), repo: slug };
+  }
+
   if (!(await ghReady())) {
     throw httpError(
       400,
-      "没有检测到可用的 GitHub 登录。请先在终端执行一次 gh auth login 完成登录，再回来上传。"
+      "没有可用的 GitHub 上传通道。二选一：① 在本机终端执行一次 gh auth login 完成登录；② 设置环境变量 GITHUB_TOKEN（GitHub 个人访问令牌，勾选 repo 权限）后重启本程序。"
     );
   }
   const { slug, branch } = await ghTarget();
-  const remotePath = `characters/${fileName}`;
   await ghUploadFile(slug, localPath, remotePath);
   const publicUrl = `https://raw.githubusercontent.com/${slug}/${branch}/${remotePath}`;
   const verified = await waitForPublic(publicUrl);
@@ -436,7 +531,7 @@ function lanIPv4s() {
   return out;
 }
 
-const CERT_DIR = path.join(ROOT, "certs");
+const CERT_DIR = path.join(DATA_ROOT, "certs");
 const CERT_KEY = path.join(CERT_DIR, "key.pem");
 const CERT_CRT = path.join(CERT_DIR, "cert.pem");
 const CERT_META = path.join(CERT_DIR, "meta.json");
@@ -473,6 +568,21 @@ async function ensureCert(ips) {
 }
 
 // ---------------- HTTP 服务 ----------------
+// 读取「程序自带」的只读资源：优先磁盘（源码模式方便热改），磁盘没有就用打包时内嵌的那份
+async function readAsset(rel) {
+  try {
+    return await readFile(path.join(ROOT, rel));
+  } catch {
+    const b64 = EMBEDDED[rel];
+    if (b64) return Buffer.from(b64, "base64");
+    throw httpError(404, "资源不存在");
+  }
+}
+
+function hasAsset(rel) {
+  return Boolean(EMBEDDED[rel]) || existsSync(path.join(ROOT, rel)) || existsSync(path.join(DATA_ROOT, rel));
+}
+
 const STATIC_FILES = {
   "/": ["public/index.html", "text/html; charset=utf-8"],
   "/index.html": ["public/index.html", "text/html; charset=utf-8"],
@@ -799,18 +909,23 @@ async function handle(req, res, secure) {
         return res.end();
       }
       const file = STATIC_FILES[url.pathname];
-      if (file) return send(res, 200, await readFile(path.join(ROOT, file[0])), file[1]);
+      if (file) return send(res, 200, await readAsset(file[0]), file[1]);
       if (url.pathname.startsWith("/assets/")) {
         const rel = url.pathname.slice("/assets/".length);
         const name = path.basename(rel);
         const ext = path.extname(name).toLowerCase();
         if (!ASSET_TYPES[ext]) return send(res, 404, { error: "不支持的文件类型" });
-        // 仅允许 assets/ 根目录与 assets/uploads/ 子目录，防止路径穿越
-        const sub = rel.includes("/") ? "uploads" : "";
-        if (rel.includes("/") && !rel.startsWith("uploads/")) return send(res, 404, { error: "Not Found" });
+        // 仅允许 assets/ 根目录（程序自带，只读）与 assets/uploads/（用户上传，可写），防止路径穿越
+        if (rel.includes("/")) {
+          if (!rel.startsWith("uploads/")) return send(res, 404, { error: "Not Found" });
+          try {
+            return send(res, 200, await readFile(path.join(UPLOAD_DIR, name)), ASSET_TYPES[ext]);
+          } catch {
+            return send(res, 404, { error: "文件不存在" });
+          }
+        }
         try {
-          const data = await readFile(path.join(ROOT, "assets", sub, name));
-          return send(res, 200, data, ASSET_TYPES[ext]);
+          return send(res, 200, await readAsset(`assets/${name}`), ASSET_TYPES[ext]);
         } catch {
           return send(res, 404, { error: "文件不存在" });
         }
@@ -836,59 +951,72 @@ function openBrowser(url) {
   } catch { /* 打不开浏览器不影响服务 */ }
 }
 
-const cfg0 = await loadConfig();
-const HOST = (process.env.HOST || (cfg0.lan_access === false ? "127.0.0.1" : cfg0.host) || "0.0.0.0").trim();
-const PORT = Number(process.env.PORT || cfg0.port || 3000);
-const HTTPS_PORT = Number(process.env.HTTPS_PORT || cfg0.https_port || 3443);
-RUNTIME.host = HOST;
-RUNTIME.port = PORT;
-RUNTIME.httpsPort = HTTPS_PORT;
+// ---------------- 启动 ----------------
+async function main() {
+  await mkdir(UPLOAD_DIR, { recursive: true });
+  await mkdir(CERT_DIR, { recursive: true });
 
-const ips = lanIPv4s().map((x) => x.address);
-const cert = await ensureCert(ips);
-netState.httpsReady = cert.ok;
-netState.certGenerated = Boolean(cert.generated);
-netState.certError = cert.ok ? "" : cert.error || "证书生成失败";
-netState.httpsPort = HTTPS_PORT;
-if (netState.httpsReady && cert.generated) console.log("  已生成本机自签证书 certs/（供手机 https 访问使用）");
+  const cfg0 = await loadConfig();
+  const HOST = (process.env.HOST || (cfg0.lan_access === false ? "127.0.0.1" : cfg0.host) || "0.0.0.0").trim();
+  const PORT = Number(process.env.PORT || cfg0.port || 3000);
+  const HTTPS_PORT = Number(process.env.HTTPS_PORT || cfg0.https_port || 3443);
+  RUNTIME.host = HOST;
+  RUNTIME.port = PORT;
+  RUNTIME.httpsPort = HTTPS_PORT;
 
-const server = http.createServer((req, res) => handle(req, res, false));
-server.listen(PORT, HOST, () => {
-  console.log("");
-  console.log("  赛博女友 已启动");
-  console.log("  · 本机：  http://localhost:" + PORT);
-  if (HOST === "0.0.0.0") {
-    if (!ips.length) console.log("  · 局域网：没检测到局域网 IPv4（检查一下网卡/Wi-Fi）");
-    for (const ip of ips) console.log("  · 手机/平板：http://" + ip + ":" + PORT + "  （打字聊天可用；开麦需要 https）");
-  } else {
-    console.log("  · 当前只监听本机（config.json 里 lan_access / host 可打开局域网访问）");
-  }
+  const ips = lanIPv4s().map((x) => x.address);
+  const cert = await ensureCert(ips);
+  netState.httpsReady = cert.ok;
+  netState.certGenerated = Boolean(cert.generated);
+  netState.certError = cert.ok ? "" : cert.error || "证书生成失败";
+  netState.httpsPort = HTTPS_PORT;
+  if (netState.httpsReady && cert.generated) console.log("  已生成本机自签证书（供手机 https 访问使用）");
+
+  const server = http.createServer((req, res) => handle(req, res, false));
+  server.listen(PORT, HOST, () => {
+    console.log("");
+    console.log("  赛博女友 已启动" + (IS_SEA ? "（独立版）" : ""));
+    console.log("  · 本机：  http://localhost:" + PORT);
+    if (HOST === "0.0.0.0") {
+      if (!ips.length) console.log("  · 局域网：没检测到局域网 IPv4（检查一下网卡/Wi-Fi）");
+      for (const ip of ips) console.log("  · 手机/平板：http://" + ip + ":" + PORT + "  （打字聊天可用；开麦需要 https）");
+    } else {
+      console.log("  · 当前只监听本机（config.json 里 lan_access / host 可打开局域网访问）");
+    }
+    if (netState.httpsReady) {
+      for (const ip of ips) console.log("  · 手机开麦：  https://" + ip + ":" + HTTPS_PORT + "  （首次会提示证书不受信任，点「继续访问」即可）");
+    } else {
+      console.log("  · 手机开麦所需的 https 没起来：" + netState.certError);
+    }
+    console.log("  · API Key：" + (process.env.VIVIX_API_KEY ? "来自环境变量 VIVIX_API_KEY" : "请在页面右上角「设置」里填写"));
+    console.log("  · 数据目录：" + DATA_ROOT);
+    console.log("");
+    if (process.env.NO_OPEN !== "1") openBrowser(`http://localhost:${PORT}`);
+  });
+
   if (netState.httpsReady) {
-    for (const ip of ips) console.log("  · 手机开麦：  https://" + ip + ":" + HTTPS_PORT + "  （首次会提示证书不受信任，点「继续访问」即可）");
-  } else {
-    console.log("  · 手机开麦所需的 https 没起来：" + netState.certError);
-  }
-  console.log("  · API Key：" + (process.env.VIVIX_API_KEY ? "来自环境变量 VIVIX_API_KEY" : "请在页面右上角「设置」里填写"));
-  console.log("");
-  if (process.env.NO_OPEN !== "1") openBrowser(`http://localhost:${PORT}`);
-});
-
-if (netState.httpsReady) {
-  try {
-    const tls = await readFile(CERT_KEY, "utf8").then(async (key) => ({
-      key,
-      cert: await readFile(CERT_CRT, "utf8")
-    }));
-    const httpsServer = https.createServer(tls, (req, res) => handle(req, res, true));
-    httpsServer.listen(HTTPS_PORT, HOST, () => {
-      console.log("  HTTPS 已监听 " + HTTPS_PORT + " 端口（手机在此地址上可以开麦）");
-    });
-    httpsServer.on("error", (e) => {
+    try {
+      const tls = {
+        key: await readFile(CERT_KEY, "utf8"),
+        cert: await readFile(CERT_CRT, "utf8")
+      };
+      const httpsServer = https.createServer(tls, (req, res) => handle(req, res, true));
+      httpsServer.listen(HTTPS_PORT, HOST, () => {
+        console.log("  HTTPS 已监听 " + HTTPS_PORT + " 端口（手机在此地址上可以开麦）");
+      });
+      httpsServer.on("error", (e) => {
+        netState.httpsReady = false;
+        console.log("  HTTPS 启动失败（" + e.message + "），不影响 http 使用");
+      });
+    } catch (e) {
       netState.httpsReady = false;
       console.log("  HTTPS 启动失败（" + e.message + "），不影响 http 使用");
-    });
-  } catch (e) {
-    netState.httpsReady = false;
-    console.log("  HTTPS 启动失败（" + e.message + "），不影响 http 使用");
+    }
   }
 }
+
+main().catch((e) => {
+  console.error("启动失败：" + (e?.message || e));
+  console.error("如果提示端口被占用，先双击「关闭.cmd」，或改 config.json 里的 port。");
+  process.exitCode = 1;
+});

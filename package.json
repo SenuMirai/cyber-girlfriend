@@ -6,6 +6,9 @@
   "description": "赛博女友 · 基于 Vivix vivix-a1-stream 实时音视频 AI 恋人界面（本地运行）",
   "scripts": {
     "build": "esbuild src/main.js --bundle --outfile=public/app.js",
+    "build:exe": "node tools/build-exe.mjs",
+    "build:installer": "node tools/build-installer.mjs",
+    "build:all": "npm run build:exe && npm run build:installer",
     "start": "node server.mjs",
     "dev": "npm run build && node server.mjs"
   },
@@ -15,6 +18,7 @@
     "trtc-sdk-v5": "^5.9.0"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.25.0",
+    "postject": "^1.0.0-alpha.6"
   }
 }
