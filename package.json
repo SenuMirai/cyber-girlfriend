@@ -1,0 +1,20 @@
+{
+  "name": "cyber-girlfriend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "赛博女友 · 基于 Vivix vivix-a1-stream 实时音视频 AI 恋人界面（本地运行）",
+  "scripts": {
+    "build": "esbuild src/main.js --bundle --outfile=public/app.js",
+    "start": "node server.mjs",
+    "dev": "npm run build && node server.mjs"
+  },
+  "dependencies": {
+    "qrcode-generator": "^2.0.4",
+    "selfsigned": "^5.5.0",
+    "trtc-sdk-v5": "^5.9.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

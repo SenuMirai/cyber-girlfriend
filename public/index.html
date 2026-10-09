@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>赛博女友</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ======== 竖版舞台：人物画面铺满 ======== -->
+    <main id="stage">
+      <div id="video-layer">
+        <img id="poster" src="/assets/character.jpg" alt="" />
+        <div id="avatar-video" class="video-view"></div>
+        <div id="stage-shade"></div>
+      </div>
+
+      <!-- 顶栏：左上角 赛博女友 · 右上角 设置 -->
+      <header id="topbar">
+        <div id="brand" class="glass">
+          <span class="brand-dot" id="brand-dot"></span>
+          <span id="brand-name">赛博女友</span>
+        </div>
+        <div class="topbar-right">
+          <button id="share-btn" class="glass icon-btn" aria-label="在手机上打开" title="在手机上打开">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="6" y="2.5" width="12" height="19" rx="2.6"></rect>
+              <path d="M11 5.5h2"></path>
+            </svg>
+          </button>
+          <button id="settings-btn" class="glass icon-btn" aria-label="设置" title="设置">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3.2"></circle>
+              <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.65 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9c.26.63.87 1.03 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51.97Z"></path>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- 侧边对话区（磨砂玻璃，不挡人物） -->
+      <section id="chat" class="glass-panel" hidden>
+        <div id="chat-head">
+          <span>聊天</span>
+          <button id="chat-collapse" class="ghost-btn" aria-label="收起">收起</button>
+        </div>
+        <div id="messages"></div>
+      </section>
+
+      <!-- 她说话提示 + 打断 -->
+      <div id="speaking-tip" class="glass" hidden>
+        <span class="eq"><i></i><i></i><i></i></span>
+        <span>她在说话</span>
+        <button id="interrupt-btn" class="ghost-btn">打断</button>
+      </div>
+
+      <!-- 底部磨砂坞 -->
+      <footer id="dock">
+        <div id="start-wrap" class="glass dock-row">
+          <button id="start-btn" class="primary-btn">开始聊天</button>
+          <button id="start-call-btn" class="icon-btn" title="直接打电话">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.13.96.36 1.9.7 2.8a2 2 0 0 1-.45 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.45c.9.34 1.84.57 2.8.7A2 2 0 0 1 22 16.9Z"></path>
+            </svg>
+          </button>
+        </div>
+
+        <div id="live-wrap" class="glass dock-row" hidden>
+          <button id="mic-btn" class="icon-btn" title="开麦说话">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="2.5" width="6" height="11.5" rx="3"></rect>
+              <path d="M5 11a7 7 0 0 0 14 0"></path>
+              <path d="M12 18v3.5"></path>
+            </svg>
+          </button>
+          <input id="text-input" type="text" placeholder="和她说点什么…" autocomplete="off" />
+          <button id="send-btn" class="icon-btn" title="发送">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 2 11 13"></path>
+              <path d="M22 2 15 22l-4-9-9-4Z"></path>
+            </svg>
+          </button>
+          <button id="hangup-btn" class="icon-btn danger" title="挂断">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10.7 13.3a16 16 0 0 0 6-6l1.3 1.3a2 2 0 0 0 2.1.45c.9-.34 1.84-.57 2.8-.7"></path>
+              <path d="M2 11.2c1.3-.9 5.5-2 10 0"></path>
+              <path d="M8 21 21 8"></path>
+            </svg>
+          </button>
+        </div>
+
+        <div id="call-chip" class="glass" hidden>
+          <span class="pulse-dot"></span>
+          <span id="call-text">通话中 · 直接说话就行</span>
+        </div>
+      </footer>
+    </main>
+
+    <!-- 浮层 -->
+    <button id="enable-sound" class="glass" hidden>开启声音</button>
+    <div id="toast" class="glass" hidden></div>
+
+    <!-- ======== 手机扫码浮层 ======== -->
+    <div id="share-mask" hidden>
+      <div id="share-card" class="glass-panel">
+        <div id="share-head">
+          <h2>在手机上打开</h2>
+          <button id="share-close" class="ghost-btn">关闭</button>
+        </div>
+        <p class="share-lead">手机和这台电脑连同一个 Wi-Fi，用相机扫下面这个码就能直接打开。</p>
+        <div class="qr-wrap"><img id="qr-img" alt="扫码打开" /></div>
+        <div id="share-lines"></div>
+        <p class="tip" id="share-tip"></p>
+        <div class="share-actions">
+          <button id="share-copy" class="mini-btn">复制地址</button>
+          <button id="share-refresh" class="mini-btn">刷新地址</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======== 设置面板 ======== -->
+    <div id="settings-mask" hidden>
+      <aside id="settings-panel" class="glass-panel">
+        <div id="settings-head">
+          <h2>设置</h2>
+          <button id="settings-close" class="ghost-btn">关闭</button>
+        </div>
+
+        <div class="form">
+          <section class="form-block">
+            <h3>模型与密钥</h3>
+            <label class="field">
+              <span>Vivix API Key</span>
+              <input id="cfg-api-key" type="password" placeholder="粘贴 API Key" autocomplete="off" />
+              <small id="api-key-state"></small>
+            </label>
+            <div class="field-row">
+              <label class="field">
+                <span>画面比例</span>
+                <select id="cfg-aspect">
+                  <option value="9:16">9:16 竖版</option>
+                  <option value="16:9">16:9 横版</option>
+                  <option value="1:1">1:1 方形</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>分辨率</span>
+                <select id="cfg-resolution">
+                  <option value="720p">720p</option>
+                  <option value="1080p">1080p</option>
+                </select>
+              </label>
+            </div>
+            <p class="tip">模型固定为 <b>vivix-a1-stream</b>（实时音视频 · 全双工）。改完比例记得重新裁一次形象图，让人物不变形。</p>
+          </section>
+
+          <section class="form-block">
+            <h3>角色列表</h3>
+            <p class="tip">把一个角色的「形象图 + 人设 + 声线 + 画面比例」整体存下来，随时切回来，不用每次重填。</p>
+            <div class="btn-row">
+              <input id="char-new-name" class="mini-input" type="text" placeholder="角色名（留空就用下面「名字」字段）" maxlength="40" />
+              <button id="char-save-btn" class="mini-btn" type="button">保存当前设置为角色</button>
+              <button id="char-export-btn" class="mini-btn" type="button">导出角色包</button>
+              <button id="char-import-btn" class="mini-btn" type="button">导入角色包</button>
+              <input id="char-import-input" type="file" accept="application/json,.json" hidden />
+            </div>
+            <div id="char-list" class="char-list"></div>
+          </section>
+
+          <section class="form-block">
+            <h3>角色形象图（比例对齐 · 关键）</h3>
+            <p class="tip">
+              Vivix 官方要求：<b>首图比例必须和输出比例一致</b>。拿一张横图去跑 9:16 竖版，模型会把人物<b>横向压扁、变窄变形</b>。
+              这里会先把图片按目标比例处理成标准尺寸，再上传。
+            </p>
+            <div class="field">
+              <span>① 选照片</span>
+              <div class="btn-row">
+                <button id="cfg-upload-btn" class="mini-btn" type="button">选择照片…</button>
+                <button id="cfg-refetch-btn" class="mini-btn" type="button">重新裁切当前图片</button>
+                <input id="cfg-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+                <span id="cfg-upload-state" class="upload-state"></span>
+              </div>
+            </div>
+
+            <div id="crop-panel" hidden>
+              <div class="field-row">
+                <label class="field">
+                  <span>② 目标比例</span>
+                  <select id="cfg-crop-aspect">
+                    <option value="follow">跟随画面比例</option>
+                    <option value="9:16">9:16 竖版</option>
+                    <option value="16:9">16:9 横版</option>
+                    <option value="1:1">1:1 方形</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>处理方式</span>
+                  <select id="cfg-crop-mode">
+                    <option value="auto">自动（推荐）</option>
+                    <option value="cover">裁切铺满</option>
+                    <option value="contain">补边不裁人</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>取景</span>
+                  <select id="cfg-crop-focus">
+                    <option value="auto">自动</option>
+                    <option value="top">偏上</option>
+                    <option value="center">居中</option>
+                    <option value="bottom">偏下</option>
+                  </select>
+                </label>
+              </div>
+              <div class="crop-preview">
+                <figure>
+                  <img id="crop-before" alt="原图" />
+                  <figcaption>原图 <b id="crop-before-meta"></b></figcaption>
+                </figure>
+                <figure>
+                  <img id="crop-after" alt="处理结果" />
+                  <figcaption>将上传 <b id="crop-after-meta"></b></figcaption>
+                </figure>
+              </div>
+              <p class="tip" id="crop-hint"></p>
+              <div class="btn-row">
+                <button id="crop-confirm" class="mini-btn primary-ish" type="button">确认并上传</button>
+                <button id="crop-cancel" class="mini-btn" type="button">取消</button>
+              </div>
+            </div>
+
+            <div class="field">
+              <span>当前形象图</span>
+              <div class="upload-row">
+                <img id="cfg-upload-preview" class="upload-thumb" alt="" hidden />
+                <small id="cfg-ratio-state" class="upload-state"></small>
+              </div>
+              <small>画面比例改过之后，这里会提示当前图片是不是还配得上。</small>
+            </div>
+
+            <label class="field">
+              <span>角色图片 URL（公网地址，上传后自动填）</span>
+              <input id="cfg-image-url" type="text" placeholder="https://…" />
+              <small id="cfg-image-hint"></small>
+            </label>
+            <label class="field">
+              <span>图片描述（英文，可选，帮助模型稳住人物）</span>
+              <textarea id="cfg-image-desc" rows="2"></textarea>
+            </label>
+            <div class="field-row">
+              <label class="field">
+                <span>名字</span>
+                <input id="cfg-name" type="text" />
+              </label>
+              <label class="field">
+                <span>开场白</span>
+                <input id="cfg-opening" type="text" placeholder="宝宝怎么啦" />
+              </label>
+            </div>
+            <label class="field">
+              <span>人设（instructions）</span>
+              <textarea id="cfg-persona" rows="7"></textarea>
+            </label>
+          </section>
+
+          <section class="form-block">
+            <h3>声音</h3>
+            <p class="tip">音色分「已验证」（Vivix 官方文档直接列出）和「候选」（出自 CosyVoice 官方音色表，Vivix 未列出，需自己试）。分组名里都标了。</p>
+            <label class="field">
+              <span>音色</span>
+              <select id="cfg-voice"></select>
+              <small id="voice-source"></small>
+            </label>
+            <label class="field">
+              <span>自定义音色 ID（下拉里没有就填这里，优先于上面）</span>
+              <input id="cfg-voice-custom" type="text" placeholder="如 voice_xxx（你的克隆音色）" />
+            </label>
+            <label class="field" id="voice-key-field" hidden>
+              <span>ElevenLabs API Key（选了 ElevenLabs 音色才填）</span>
+              <input id="cfg-voice-key" type="password" placeholder="留空 = 用 Vivix 平台凭据" autocomplete="off" />
+              <small id="voice-key-state"></small>
+            </label>
+            <div class="field-row">
+              <label class="field">
+                <span>语速 <b id="speed-label">1.0</b></span>
+                <input id="cfg-speed" type="range" min="0.8" max="1.3" step="0.05" value="1" />
+              </label>
+            </div>
+            <div class="btn-row">
+              <button id="voice-test-btn" class="mini-btn" type="button">试听这个音色</button>
+              <span class="upload-state" id="voice-test-state">会真实开一次会话（计费），听完点挂断即可</span>
+            </div>
+          </section>
+
+          <section class="form-block">
+            <h3>运动控制（高级）</h3>
+            <p class="tip">已内置「镜头跟随、稳定上半身与脸部大小、少转头、不遮眼、可走动」约束，一般不用改。</p>
+            <label class="field">
+              <span>说话时 · 运动导演提示词</span>
+              <textarea id="cfg-speak-prompt" rows="4"></textarea>
+            </label>
+            <label class="field">
+              <span>聆听时 · 待机动作提示词</span>
+              <textarea id="cfg-listen-prompt" rows="4"></textarea>
+            </label>
+          </section>
+
+          <section class="form-block">
+            <h3>会话</h3>
+            <div class="field-row">
+              <label class="field">
+                <span>单次时长上限（分钟）</span>
+                <input id="cfg-max-duration" type="number" min="1" max="60" step="1" />
+              </label>
+              <label class="field">
+                <span>断线自动挂断（秒）</span>
+                <input id="cfg-auto-close" type="number" min="0" max="600" step="10" />
+              </label>
+            </div>
+          </section>
+
+          <section class="form-block">
+            <h3>其他设备访问</h3>
+            <div id="net-lines" class="net-lines"></div>
+            <p class="tip" id="net-tip"></p>
+            <div class="field-row">
+              <label class="field">
+                <span>监听端口（改完要重启）</span>
+                <input id="cfg-port" type="number" min="1024" max="65535" step="1" />
+              </label>
+              <label class="field">
+                <span>HTTPS 端口（改完要重启）</span>
+                <input id="cfg-https-port" type="number" min="1024" max="65535" step="1" />
+              </label>
+            </div>
+            <label class="check-field">
+              <input id="cfg-lan" type="checkbox" />
+              <span>允许局域网访问（关掉后只有本机能打开）</span>
+            </label>
+          </section>
+
+          <div class="form-actions">
+            <button id="settings-save" class="primary-btn">保存设置</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

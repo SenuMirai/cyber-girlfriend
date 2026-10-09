@@ -1,0 +1,17 @@
+node_modules/
+public/app.js
+assets/uploads/
+server-test.log
+*.log
+
+# 本地自签证书（含私钥，绝不入库）
+certs/
+
+# 改造前的物理备份，只留在本机
+backups/
+
+# 角色库属于本机使用数据（人设、本地图片路径），不入库
+characters.json
+
+# 本地配置（可能包含 API Key，不要提交到 GitHub；可改用环境变量 VIVIX_API_KEY）
+config.json
