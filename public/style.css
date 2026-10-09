@@ -569,6 +569,109 @@ html, body {
 .share-actions { display: flex; gap: 10px; margin-top: 6px; }
 .share-actions .mini-btn { flex: 1; }
 
+/* ================= Vivix Key 申请引导 ================= */
+.key-guide {
+  margin: -2px 0 16px;
+  padding: 13px 14px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid rgba(255, 111, 156, 0.28);
+  background: linear-gradient(180deg, rgba(255, 111, 156, 0.13), rgba(255, 111, 156, 0.05));
+}
+.key-guide-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap; margin-bottom: 9px;
+}
+.key-guide-head b { font-size: 12.5px; font-weight: 600; color: #ffd0de; letter-spacing: 0.02em; }
+.pill-link {
+  flex: none; display: inline-block;
+  padding: 5px 12px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  text-decoration: none; color: #fff;
+  background: var(--accent); border: 1px solid transparent;
+  transition: transform 0.16s var(--ease), background 0.2s var(--ease);
+}
+.pill-link:hover { background: var(--accent-deep); }
+.pill-link:active { transform: scale(0.96); }
+
+.key-steps {
+  margin: 0; padding-left: 18px;
+  font-size: 12px; line-height: 1.75; color: var(--text-dim);
+}
+.key-steps li { margin-bottom: 2px; }
+.key-steps b { color: rgba(255, 255, 255, 0.9); font-weight: 600; }
+.key-steps a, .key-guide a {
+  color: #ffb3cb; text-decoration: none;
+  border-bottom: 1px solid rgba(255, 179, 203, 0.45);
+}
+.key-steps a:hover { color: #fff; border-bottom-color: #fff; }
+.key-guide-note {
+  margin-top: 9px; padding-top: 9px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.13);
+  font-size: 11.5px; line-height: 1.6; color: var(--text-dim);
+}
+
+/* ================= 使用说明浮层 ================= */
+#help-mask {
+  position: fixed; inset: 0; z-index: 90;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.55);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  animation: fadeIn 0.25s var(--ease);
+}
+#help-card {
+  width: min(520px, 94vw);
+  max-height: 88dvh;
+  display: flex; flex-direction: column;
+  border-radius: var(--r-lg);
+  background: var(--glass-bg-strong);
+  animation: fadeUp 0.35s var(--ease);
+}
+#help-head {
+  flex: none;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 20px 24px 10px;
+}
+#help-head h2 { font-size: 19px; font-weight: 700; letter-spacing: 0.06em; }
+#help-body { overflow-y: auto; padding: 4px 24px 26px; scrollbar-width: thin; }
+#help-body::-webkit-scrollbar { width: 5px; }
+#help-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
+
+#help-body h3 { font-size: 13px; font-weight: 600; letter-spacing: 0.1em; color: #ffc2d6; margin: 20px 0 9px; }
+#help-body h3:first-child { margin-top: 8px; }
+#help-body p { font-size: 12.5px; line-height: 1.75; color: var(--text-dim); margin-bottom: 9px; }
+#help-body ol, #help-body ul { margin: 0 0 10px; padding-left: 19px; }
+#help-body li { font-size: 12.5px; line-height: 1.75; color: var(--text-dim); margin-bottom: 4px; }
+#help-body b { color: rgba(255, 255, 255, 0.92); font-weight: 600; }
+#help-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px; padding: 1.5px 5px; border-radius: 5px;
+  background: rgba(255, 255, 255, 0.1); color: #ffd0de;
+}
+#help-body a { color: #ffb3cb; text-decoration: none; border-bottom: 1px solid rgba(255, 179, 203, 0.45); }
+#help-body a:hover { color: #fff; border-bottom-color: #fff; }
+
+.help-callout {
+  margin: 10px 0 4px; padding: 11px 13px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(255, 111, 156, 0.3);
+  background: rgba(255, 111, 156, 0.1);
+  font-size: 12.5px; line-height: 1.7; color: #ffd9e4;
+}
+.help-callout code { background: rgba(255, 255, 255, 0.16); }
+.help-steps { counter-reset: helpstep; list-style: none; padding-left: 0 !important; }
+.help-steps li { position: relative; padding-left: 30px; margin-bottom: 10px; }
+.help-steps li::before {
+  counter-increment: helpstep;
+  content: counter(helpstep);
+  position: absolute; left: 0; top: 1px;
+  width: 20px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: var(--accent); color: #fff;
+  font-size: 11px; font-weight: 700;
+}
+
 /* 窄屏微调 */
 @media (max-width: 420px) {
   #brand { padding: 8px 13px; font-size: 14px; }
@@ -576,4 +679,8 @@ html, body {
   .msg { font-size: 13.5px; }
   .crop-preview { grid-template-columns: 1fr; }
   .char-thumb { width: 46px; height: 46px; }
+  #help-card { max-height: 92dvh; }
+  #help-body { padding: 4px 18px 22px; }
+  #help-head { padding: 18px 18px 8px; }
+  .key-guide-head { gap: 8px; }
 }

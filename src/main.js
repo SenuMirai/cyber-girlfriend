@@ -67,6 +67,11 @@ const els = {
   settingsMask: $("#settings-mask"),
   settingsClose: $("#settings-close"),
   settingsSave: $("#settings-save"),
+  // 使用说明浮层
+  helpBtn: $("#help-btn"),
+  helpMask: $("#help-mask"),
+  helpClose: $("#help-close"),
+  helpBody: $("#help-body"),
   speedLabel: $("#speed-label"),
   // 分享
   shareMask: $("#share-mask"),
@@ -288,7 +293,120 @@ function applyModeUI() {
   if ($("#api-key-label")) $("#api-key-label").textContent = onPublic ? "你自己的 Vivix API Key" : "Vivix API Key";
   const keyInput = $("#cfg-api-key");
   if (keyInput) keyInput.placeholder = onPublic ? "只存在你的浏览器里，不会上传" : "粘贴 API Key";
+  renderKeyGuideNote();
 }
+
+/* ================= Vivix Key 申请引导 + 使用说明 ================= */
+const VIVIX_PLATFORM_URL = "https://platform.vivix.ai/";
+const VIVIX_DOCS_URL = "https://docs.vivix.ai/overview/introduction";
+
+// 设置面板里 Key 输入框下方那段说明，按模式换文案
+function renderKeyGuideNote() {
+  const el = $("#key-guide-note");
+  if (!el) return;
+  el.innerHTML =
+    state.mode === "public"
+      ? "Vivix 按用量计费，目前是 Developer Preview 阶段，可免费试用。你填的 Key <b>只保存在这台设备的浏览器里</b>，不会上传到服务器，用量算你自己账上。"
+      : "Vivix 按用量计费，目前是 Developer Preview 阶段，可免费试用。你填的 Key 保存在本机的 <code>config.json</code> 里，只有这台电脑能读到。";
+}
+
+// 使用说明浮层内容（两个模式各写一份，重点不同）
+function helpHtml() {
+  const P = VIVIX_PLATFORM_URL;
+  const D = VIVIX_DOCS_URL;
+  const link = (href, text) =>
+    `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+
+  const intro = `
+    <h3>这是什么</h3>
+    <p>一个能<b>实时语音对话</b>的 AI 数字人。你说话，她会看着你，用嘴型和动作回答，中途可以随时打断。</p>
+    <p>形象、人设、声音都能换成你自己的 —— 换一张照片、改一段文字就行。</p>
+  `;
+
+  const keyHow = `
+    <h3>Vivix API Key 怎么拿</h3>
+    <p>这个程序本身只是界面，真正让她说话、动起来的能力由 <b>Vivix</b> 提供，所以要有 Key 才能用。</p>
+    <ol class="help-steps">
+      <li>打开 ${link(P, "platform.vivix.ai")}，用邮箱注册一个账号。</li>
+      <li>登录后点左侧菜单的 <b>API Keys</b>，新建一个，把生成的 Key 复制下来。</li>
+      <li>回到本页点右上角<b>齿轮</b>，把 Key 粘进「Vivix API Key」，再点最下面的<b>保存设置</b>。</li>
+    </ol>
+    <p>官方文档：${link(D, "docs.vivix.ai")} · 目前是 Developer Preview 阶段，可免费试用。</p>
+  `;
+
+  const character = `
+    <h3>换成你想要的角色</h3>
+    <p>设置面板里能改四样东西，改完点「保存设置」：</p>
+    <ul>
+      <li><b>角色形象图</b> —— 换一张照片。程序会先按画面比例裁好再上传，不用自己算尺寸。</li>
+      <li><b>人设</b> —— 用大白话描述她是谁、什么性格、怎么说话。写得越具体，她越像。</li>
+      <li><b>声音</b> —— 内置 40 多种音色（男声、少年音、各地口音），选好可以点「试听」。</li>
+      <li><b>开场白</b> —— 她主动说的第一句话。</li>
+    </ul>
+    <p>调顺了之后，点<b>保存当前设置为角色</b>，以后一键切回来。<b>导出角色包</b>可以把整套存成文件，换设备时再<b>导入</b>。</p>
+  `;
+
+  const faqPublic = `
+    <h3>遇到问题</h3>
+    <ul>
+      <li><b>第一次打开很慢 / 转圈很久</b> —— 免费服务器闲置时会休眠，唤醒要 30～60 秒，等一下就好，不是坏了。</li>
+      <li><b>提示 invalid api key</b> —— Key 抄错了（注意别带空格），或者 Vivix 那边额度用完了。</li>
+      <li><b>手机能用吗</b> —— 能。手机浏览器打开同一个网址就能开麦，不用装任何东西。</li>
+      <li><b>换浏览器要重填 Key</b> —— 正常。Key 只存在你这台设备的浏览器里，为的是不让别人用掉你的额度。</li>
+      <li><b>存的角色不见了</b> —— 免费服务器重启会清空数据。重要角色记得用<b>导出角色包</b>存一份。</li>
+    </ul>
+  `;
+
+  const faqLocal = `
+    <h3>遇到问题</h3>
+    <ul>
+      <li><b>提示 invalid api key</b> —— Key 抄错了（注意别带空格），或者 Vivix 那边额度用完了。</li>
+      <li><b>想在手机上看</b> —— 点右上角手机图标出二维码，手机和电脑连<b>同一个 Wi-Fi</b>，扫一下就行。</li>
+      <li><b>手机上扫不开</b> —— 确认是同一个 Wi-Fi；路由器开了「AP 隔离」的话手机连不上电脑，去路由器里关掉。</li>
+      <li><b>上传的图人物变窄变形</b> —— 形象图比例和输出比例要一致，程序会自动裁；改过画面比例后记得重新裁一次。</li>
+      <li><b>想让别人也能用</b> —— 本机版只有局域网内能用。要发给所有人用，看随包的 DEPLOY.md，可以免费部署到公网。</li>
+    </ul>
+  `;
+
+  if (state.mode === "public") {
+    return `
+      ${intro}
+      <h3>三步开始</h3>
+      <ol class="help-steps">
+        <li>点右上角<b>齿轮</b>，填上你自己的 Vivix API Key（第一次打开会自动弹出这个面板）。</li>
+        <li>点最下面的<b>保存设置</b>。</li>
+        <li>点中间的<b>开始聊天</b>；想直接说话就点旁边的电话图标。</li>
+      </ol>
+      <div class="help-callout">你的 Key <b>只存在这台设备的浏览器里</b>，不会上传到服务器。换浏览器或换手机要重填一次 —— 这是为了不让别人用掉你的额度。</div>
+      ${keyHow}
+      ${character}
+      ${faqPublic}
+    `;
+  }
+
+  return `
+    ${intro}
+    <h3>三步开始</h3>
+    <ol class="help-steps">
+      <li>点右上角<b>齿轮</b>，填上你的 Vivix API Key。</li>
+      <li>点最下面的<b>保存设置</b>。</li>
+      <li>点中间的<b>开始聊天</b>；想直接说话就点旁边的电话图标。</li>
+    </ol>
+    ${keyHow}
+    <h3>在手机或其他设备上打开</h3>
+    <p>点右上角的<b>手机图标</b>会弹出二维码。手机连<b>同一个 Wi-Fi</b>，扫码就能打开，还能直接开麦说话。</p>
+    ${character}
+    ${faqLocal}
+  `;
+}
+
+function openHelp() {
+  if (!els.helpBody) return;
+  els.helpBody.innerHTML = helpHtml();
+  els.helpMask.hidden = false;
+  els.helpBody.scrollTop = 0;
+}
+
 
 async function loadConfig() {
   const res = await apiFetch("/config");
@@ -1407,6 +1525,18 @@ els.settingsMask.addEventListener("click", (e) => {
   if (e.target === els.settingsMask) els.settingsMask.hidden = true;
 });
 els.settingsSave.addEventListener("click", saveConfig);
+
+// 使用说明浮层
+els.helpBtn.addEventListener("click", openHelp);
+els.helpClose.addEventListener("click", () => (els.helpMask.hidden = true));
+els.helpMask.addEventListener("click", (e) => {
+  if (e.target === els.helpMask) els.helpMask.hidden = true;
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!els.helpMask.hidden) els.helpMask.hidden = true;
+  else if (!els.settingsMask.hidden) els.settingsMask.hidden = true;
+});
 
 // 分享浮层
 els.shareBtn.addEventListener("click", openShare);
