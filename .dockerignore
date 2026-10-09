@@ -1,0 +1,20 @@
+# 构建镜像时不要带进去的东西
+.git
+.gitignore
+node_modules
+dist
+build
+backups
+.workbuddy
+
+# 本机数据，绝对不进镜像
+config.json
+characters.json
+certs
+assets/uploads
+
+# 安装包与临时产物
+installer
+tools
+*.log
+*.zip

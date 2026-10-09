@@ -1,0 +1,44 @@
+# Render 一键部署蓝图
+#
+# 用法：把这个仓库推到 GitHub，然后在 Render 里选
+#   New → Blueprint → 选这个仓库 → Apply
+# Render 会自动读这份文件把服务建起来。
+#
+# 环境变量说明见 .env.example，更详细的点击步骤见 DEPLOY.md。
+
+services:
+  - type: web
+    name: cyber-girlfriend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # 公网模式：数据按浏览器隔离，Key 由使用者自带
+      - key: CG_PUBLIC
+        value: "1"
+      - key: CG_DATA_DIR
+        value: /data
+      # 一份数据多久没人访问就清理（天）
+      - key: CG_CLIENT_TTL_DAYS
+        value: "30"
+      # 留空 = 完全靠使用者自带 Key（推荐，别人的用量不会算到你头上）
+      - key: VIVIX_API_KEY
+        sync: false
+
+# ─────────────────────────────────────────────────────────────
+# 关于「持久磁盘」：
+#   Render 的免费档**不支持**挂磁盘，容器重启后 /data 会被清空，
+#   也就是大家存的角色会丢（浏览器里的 API Key 不受影响）。
+#   想要数据留下来，就把服务升到付费档，然后在 Render 控制台
+#   Disks 里加一块盘挂到 /data（约 $0.25/GB/月），或者用下面这段：
+#
+#    disk:
+#      name: cg-data
+#      mountPath: /data
+#      sizeGB: 1
+#
+#   免费档的替代办法：在设置面板里点「导出角色包」，
+#   换机器时再「导入角色包」，角色就不会丢。
+# ─────────────────────────────────────────────────────────────

@@ -9,6 +9,36 @@ const $ = (sel) => document.querySelector(sel);
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+/* ================= Key 本地保管 ================= */
+// 公网部署时服务端不保存任何人的 Key，所以 Key 存在你自己这台设备的浏览器里，
+// 每次请求通过请求头带给服务端，服务端用完即丢、不落盘。
+const KEY_STORE = "cg_vivix_key";
+const VOICE_KEY_STORE = "cg_voice_key";
+const lsGet = (k) => {
+  try {
+    return localStorage.getItem(k) || "";
+  } catch {
+    return "";
+  }
+};
+const lsSet = (k, v) => {
+  try {
+    v ? localStorage.setItem(k, v) : localStorage.removeItem(k);
+  } catch {
+    /* 隐私模式下 localStorage 可能不可用，忽略即可 */
+  }
+};
+let apiKeyMem = lsGet(KEY_STORE);
+let voiceKeyMem = lsGet(VOICE_KEY_STORE);
+
+// 前端所有跟后端的往来都从这里走，统一带上使用者自己的 Key
+function apiFetch(path, options = {}) {
+  const headers = new Headers(options.headers || {});
+  if (apiKeyMem) headers.set("X-Vivix-Key", apiKeyMem);
+  if (voiceKeyMem) headers.set("X-Voice-Key", voiceKeyMem);
+  return window.fetch(path, { ...options, headers, credentials: "same-origin" });
+}
+
 const els = {
   stage: $("#stage"),
   avatarVideo: $("#avatar-video"),
@@ -120,6 +150,7 @@ const state = {
   seq: 0,
   expiryTimer: null,
   cfg: null,
+  mode: "local", // local=本机自用 / public=公网部署
   net: null,
   characters: [],
   currentCharId: "",
@@ -170,17 +201,24 @@ function layoutChat(ratio) {
 }
 
 function applyConfigToUI(payload) {
-  const { api_key_set, api_key_hint, env_key, voice_key_set, config } = payload;
+  const { api_key_set, api_key_hint, env_key, voice_key_set, config, mode } = payload;
   state.cfg = config;
+  state.mode = mode || "local";
 
-  // 状态提示
-  $("#api-key-state").textContent = env_key
-    ? "已通过环境变量 VIVIX_API_KEY 提供（这里的填写会被忽略）"
-    : api_key_set
-      ? `已保存 ${api_key_hint} · 留空表示不修改`
-      : "尚未填写";
+  // 状态提示：公网部署下服务端不保存任何人的 Key，只有本浏览器里有
+  const onPublic = state.mode === "public";
+  $("#api-key-state").textContent = onPublic
+    ? apiKeyMem
+      ? "已存在本浏览器中（服务端不保存；换浏览器或换设备要重新填）"
+      : "请填你自己的 Vivix API Key —— 只存在本浏览器，不会上传到服务器"
+    : env_key
+      ? "已通过环境变量 VIVIX_API_KEY 提供（这里的填写会被忽略）"
+      : api_key_set
+        ? `已保存 ${api_key_hint} · 留空表示不修改`
+        : "尚未填写";
   $("#cfg-api-key").value = "";
-  if (!api_key_set && !env_key) els.settingsMask.hidden = false;
+  // 已经有可用 Key 就别弹设置面板打扰人
+  if (!(onPublic && apiKeyMem) && !api_key_set && !env_key) els.settingsMask.hidden = false;
 
   // 表单
   $("#cfg-aspect").value = config.output.aspect_ratio;
@@ -208,6 +246,7 @@ function applyConfigToUI(payload) {
   updateImageHint();
   applyStageRatio(config.output.aspect_ratio);
   updateRatioOptions();
+  applyModeUI();
 
   // 人物画面占位图（优先本地文件；本地缺失时回落到公网地址）
   setPoster(config.character.source_image);
@@ -230,13 +269,29 @@ function setPoster(image) {
 
 function updateImageHint() {
   const url = $("#cfg-image-url").value.trim();
+  if (state.mode === "public") {
+    $("#cfg-image-hint").textContent = /^https?:\/\//i.test(url)
+      ? "公网图片 ✓（Vivix 服务器可以直接抓取）"
+      : "本机文件：点上面的「选择照片」，会传到这个服务自己身上并生成公网直链";
+    return;
+  }
   $("#cfg-image-hint").textContent = /^https?:\/\//i.test(url)
     ? "公网图片 ✓（Vivix 服务器可以直接抓取）"
     : "本机文件：Vivix 服务器抓不到。请点上面的「选择照片」自动上传，或在 config.json 填 public_base_url";
 }
 
+// 公网模式：这台服务是给所有人用的，所以把"本机/端口/局域网"这些只有自己才需要的设置收起来
+function applyModeUI() {
+  const onPublic = state.mode === "public";
+  if ($("#net-local-opts")) $("#net-local-opts").hidden = onPublic;
+  if ($("#net-title")) $("#net-title").textContent = onPublic ? "分享给朋友" : "其他设备访问";
+  if ($("#api-key-label")) $("#api-key-label").textContent = onPublic ? "你自己的 Vivix API Key" : "Vivix API Key";
+  const keyInput = $("#cfg-api-key");
+  if (keyInput) keyInput.placeholder = onPublic ? "只存在你的浏览器里，不会上传" : "粘贴 API Key";
+}
+
 async function loadConfig() {
-  const res = await fetch("/config");
+  const res = await apiFetch("/config");
   const payload = await res.json();
   applyConfigToUI(payload);
 }
@@ -287,7 +342,18 @@ function collectConfigPatch() {
 async function saveConfig() {
   els.settingsSave.disabled = true;
   try {
-    const res = await fetch("/config", {
+    // 使用者自己填的 Key 就地留在本浏览器（公网部署时服务端不保存任何人的 Key）
+    const typedKey = $("#cfg-api-key").value.trim();
+    if (typedKey && !typedKey.includes("••••")) {
+      apiKeyMem = typedKey;
+      lsSet(KEY_STORE, typedKey);
+    }
+    const typedVoiceKey = els.voiceKey.value.trim();
+    if (typedVoiceKey && !typedVoiceKey.includes("••••")) {
+      voiceKeyMem = typedVoiceKey;
+      lsSet(VOICE_KEY_STORE, typedVoiceKey);
+    }
+    const res = await apiFetch("/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(collectConfigPatch())
@@ -309,7 +375,7 @@ async function saveConfig() {
 /* ================= 角色列表 ================= */
 async function refreshCharacters() {
   try {
-    const res = await fetch("/characters");
+    const res = await apiFetch("/characters");
     const data = await res.json();
     state.characters = data.characters || [];
   } catch {
@@ -360,14 +426,14 @@ async function saveCharacter() {
   els.charSaveBtn.disabled = true;
   try {
     // 先把当前表单内容落盘，再快照，避免存到旧值
-    await fetch("/config", {
+    await apiFetch("/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(collectConfigPatch())
     }).then((r) => r.json()).then((d) => {
       if (d.error) throw new Error(d.error);
     });
-    const res = await fetch("/characters", {
+    const res = await apiFetch("/characters", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name })
@@ -388,7 +454,7 @@ async function saveCharacter() {
 
 async function applyCharacter(c) {
   try {
-    const res = await fetch(`/characters/${encodeURIComponent(c.id)}/apply`, { method: "POST" });
+    const res = await apiFetch(`/characters/${encodeURIComponent(c.id)}/apply`, { method: "POST" });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "载入失败");
     state.currentCharId = c.id;
@@ -403,7 +469,7 @@ async function applyCharacter(c) {
 async function renameCharacter(c, name) {
   if (!name || name === c.name) return;
   try {
-    const res = await fetch(`/characters/${encodeURIComponent(c.id)}`, {
+    const res = await apiFetch(`/characters/${encodeURIComponent(c.id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name })
@@ -421,7 +487,7 @@ async function renameCharacter(c, name) {
 async function deleteCharacter(c) {
   if (!window.confirm(`删除角色「${c.name}」？（同时清理它独占的本地图片，已上传到 GitHub 的那份不动）`)) return;
   try {
-    const res = await fetch(`/characters/${encodeURIComponent(c.id)}?purge=1`, { method: "DELETE" });
+    const res = await apiFetch(`/characters/${encodeURIComponent(c.id)}?purge=1`, { method: "DELETE" });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "删除失败");
     await refreshCharacters();
@@ -440,7 +506,7 @@ async function importCharacters(file) {
     const text = await file.text();
     const parsed = JSON.parse(text);
     if (!parsed || !Array.isArray(parsed.characters)) throw new Error("这不是本程序导出的角色包");
-    const res = await fetch("/characters/import", {
+    const res = await apiFetch("/characters/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ data: parsed })
@@ -623,7 +689,7 @@ async function refetchCurrentImage() {
     let src = "";
     if (local) src = "/" + local.replace(/^\.?\//, "");
     else if (/^https?:\/\//i.test(url)) {
-      const r = await fetch("/proxy-image", {
+      const r = await apiFetch("/proxy-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url })
@@ -649,7 +715,7 @@ async function confirmUpload() {
   els.cropConfirm.disabled = true;
   try {
     setUploadState("上传中…（传到 GitHub，稍等几秒）");
-    const res = await fetch("/upload", {
+    const res = await apiFetch("/upload", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ data: CROP.result.dataUrl })
@@ -808,7 +874,7 @@ function updateVoiceNote() {
 
 async function loadVoiceCatalog() {
   try {
-    const res = await fetch("/voices");
+    const res = await apiFetch("/voices");
     const data = await res.json();
     state.clonedVoices = data.cloned || [];
     buildVoiceSelect();
@@ -822,7 +888,7 @@ async function loadVoiceCatalog() {
 /* ================= 其他设备访问 ================= */
 async function loadNetInfo() {
   try {
-    const res = await fetch("/netinfo");
+    const res = await apiFetch("/netinfo");
     state.net = await res.json();
   } catch {
     state.net = null;
@@ -834,6 +900,16 @@ async function loadNetInfo() {
 function renderNetInfo() {
   const n = state.net;
   if (!n || !els.netLines) return;
+
+  // 公网部署：不需要局域网那套说明，直接告诉大家网址
+  if (n.mode === "public") {
+    const url = n.public_url || location.origin;
+    els.netLines.innerHTML = [`<div class="net-line">网址：<b>${esc(url)}</b></div>`].join("");
+    els.netTip.textContent =
+      "这个服务部署在公网上，把网址发给谁，谁就能打开用（要用自己的 Vivix API Key）。手机浏览器打开这个网址就能开麦，不需要装任何东西。";
+    return;
+  }
+
   const lines = [`本机：${n.local}`];
   for (const l of n.lan || []) {
     lines.push(`${l.name}：${l.http}${l.https ? ` ｜ 开麦：${l.https}` : ""}`);
@@ -847,6 +923,7 @@ function renderNetInfo() {
 function bestShareUrl() {
   const n = state.net;
   if (!n) return location.origin;
+  if (n.mode === "public") return n.public_url || location.origin;
   const lan = (n.lan || [])[0];
   if (!lan) return n.local;
   return lan.https || lan.http;
@@ -869,6 +946,18 @@ function renderShare() {
   if (!n) return;
   const url = bestShareUrl();
   renderQr(url);
+
+  if (n.mode === "public") {
+    els.shareLines.innerHTML = [
+      `扫码打开：<b>${esc(url)}</b>`,
+      "手机浏览器直接打开就能用，不用装东西，也不用连同一个 Wi-Fi。"
+    ]
+      .map((t) => `<div class="net-line">${t}</div>`)
+      .join("");
+    els.shareTip.textContent = "第一次打开会让你填自己的 Vivix API Key，填一次就记住了。手机开麦需要浏览器授权麦克风，点允许即可。";
+    return;
+  }
+
   const rows = [];
   rows.push(`扫码地址：<b>${esc(url)}</b>`);
   for (const l of n.lan || []) {
@@ -1123,7 +1212,7 @@ async function startChat({ withMic = false, testVoice = false } = {}) {
       });
       path += "?" + q.toString();
     }
-    const res = await fetch(path, { method: "POST" });
+    const res = await apiFetch(path, { method: "POST" });
     const info = await res.json();
     if (!res.ok) throw new Error(info.error || `创建会话失败（HTTP ${res.status}）`);
     state.session = info;
@@ -1163,7 +1252,7 @@ async function hangup({ silent = false } = {}) {
   state.stopping = true;
   clearTimeout(state.expiryTimer);
   try {
-    await fetch("/close", { method: "POST" });
+    await apiFetch("/close", { method: "POST" });
   } catch {
     /* 忽略关闭失败 */
   }

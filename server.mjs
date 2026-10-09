@@ -3,11 +3,12 @@
 // 文档：https://docs.vivix.ai/streaming-avatar/get-started/quickstart
 import http from "node:http";
 import https from "node:https";
-import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rm, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,20 +31,61 @@ const ROOT = (() => {
 // 进程不是 node 本体，说明是被打包成独立 exe 在跑（打包后没有源码目录可写）
 const IS_SEA = !/^node(\.exe)?$/i.test(path.basename(process.execPath));
 
+// 部署形态：
+//   local（默认）= 本机自用。数据在本机，单用户，可以把自己的 Key 存下来。
+//   public       = 部署到公网给所有人用（设 CG_PUBLIC=1）。
+//                  数据按浏览器隔离；API Key 由每个使用者自带，服务端绝不落盘。
+const IS_PUBLIC = /^(1|true|yes|on)$/i.test(process.env.CG_PUBLIC || "");
+
 // 可写数据目录：
-//   · 源码模式 → 就是项目目录（保持原样，你现有的 config.json / 角色 / 图片都不用搬）
+//   · 源码模式 → 就是项目目录（保持原样，现有 config.json / 角色 / 图片都不用搬）
 //   · 独立 exe → %LOCALAPPDATA%\赛博女友（放 Program Files 里也能写，不需要管理员权限）
+//   · 公网部署 → 指向平台挂载的持久磁盘（不挂的话是临时目录，重启会清）
 const DATA_ROOT = process.env.CG_DATA_DIR
   ? path.resolve(process.env.CG_DATA_DIR)
   : IS_SEA
     ? path.join(process.env.LOCALAPPDATA || os.homedir(), "赛博女友")
     : ROOT;
 
-const CONFIG_PATH = path.join(DATA_ROOT, "config.json");
-const LIBRARY_PATH = path.join(DATA_ROOT, "characters.json");
-const UPLOAD_DIR = path.join(DATA_ROOT, "assets", "uploads");
+// 公网模式下每个浏览器一个独立小仓库，放这下面
+const CLIENTS_DIR = path.join(DATA_ROOT, "clients");
+// 一份数据多久没人碰就清掉（公网实例的磁盘不能被无限占满）
+const CLIENT_TTL_DAYS = Math.max(1, Number(process.env.CG_CLIENT_TTL_DAYS || 30));
+
 const API_BASE = "https://api.vivix.ai/v1";
 const ASSET_RE = /\.(jpe?g|png|webp|gif)$/i;
+const APP_VERSION = "2.0.0";
+
+// ---------------- 每请求上下文 ----------------
+// 公网模式下一个实例同时服务很多人，"这个人的配置/角色/图片放哪"必须按请求区分。
+// 用 AsyncLocalStorage 而不是模块级变量 —— 否则并发请求会互相串数据。
+// 本地模式没有 clientId，一律落 DATA_ROOT 根目录，和改造前完全一致，老数据不用搬。
+function newCtx() {
+  return { clientId: "", dir: DATA_ROOT, apiKey: "", voiceKey: "", secure: false, host: "", proto: "http" };
+}
+const ctxStore = new AsyncLocalStorage();
+const ctx = () => ctxStore.getStore() || newCtx();
+
+const configPath = () => path.join(ctx().dir, "config.json");
+const libraryPath = () => path.join(ctx().dir, "characters.json");
+const uploadDir = () => path.join(ctx().dir, "assets", "uploads");
+// 公网部署的角色图存这里（不按用户隔离）。
+// 原因：图片是给 Vivix 服务器抓的，它来取图时**不带 cookie**，
+// 放在按 clientId 隔离的目录里它永远 404。文件名用随机 UUID，猜不到。
+const publicUploadDir = () => path.join(DATA_ROOT, "assets", "uploads");
+const certDir = () => path.join(DATA_ROOT, "certs");
+const certKeyPath = () => path.join(certDir(), "key.pem");
+const certCrtPath = () => path.join(certDir(), "cert.pem");
+
+// 这个相对路径的图，本机到底有没有（自己的目录 / 程序目录 / 公共上传 / 内嵌）
+function localAssetExists(rel) {
+  return (
+    existsSync(path.join(ctx().dir, rel)) ||
+    existsSync(path.join(DATA_ROOT, rel)) ||
+    existsSync(path.join(ROOT, rel)) ||
+    Boolean(EMBEDDED[rel])
+  );
+}
 
 // ---------------- 配置 ----------------
 // 内置默认角色 = 「大肥鱼」（含完整人设 + 运镜设定），定义在 defaults/default-character.json。
@@ -84,10 +126,15 @@ function deepMerge(base, patch) {
 async function loadConfig() {
   let cfg;
   try {
-    const raw = JSON.parse(await readFile(CONFIG_PATH, "utf8"));
+    const raw = JSON.parse(await readFile(configPath(), "utf8"));
     cfg = deepMerge(DEFAULTS, raw);
   } catch {
     cfg = structuredClone(DEFAULTS);
+  }
+  // 公网模式：Key 一律不落盘，也绝不从磁盘读回来（磁盘上的东西是共用的，不能当凭据用）
+  if (IS_PUBLIC) {
+    cfg.api_key = "";
+    if (cfg.voice) cfg.voice.tts_api_key = "";
   }
   if (repairLocalPath(cfg)) await persistConfig(cfg);
   return cfg;
@@ -103,15 +150,13 @@ function repairLocalPath(cfg) {
   const base = path.basename((img.url || "").split("?")[0]);
   if (base && ASSET_RE.test(base)) {
     for (const rel of [`assets/uploads/${base}`, `assets/${base}`]) {
-      if (existsSync(path.join(DATA_ROOT, rel)) || existsSync(path.join(ROOT, rel)) || EMBEDDED[rel]) {
+      if (localAssetExists(rel)) {
         next = rel;
         break;
       }
     }
   }
-  if (!next && before && (existsSync(path.join(DATA_ROOT, before)) || existsSync(path.join(ROOT, before)))) {
-    next = before;
-  }
+  if (!next && before && localAssetExists(before)) next = before;
   if (next === before) return false;
   img.local_path = next;
   return true;
@@ -121,11 +166,37 @@ async function persistConfig(cfg) {
   const out = { ...cfg };
   // 内部字段不写回文件
   for (const k of ["_tmp_voice_override"]) delete out[k];
-  await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2), "utf8");
+  // 公网模式下别人的配置也共用一块磁盘，Key 绝对不能写进去
+  if (IS_PUBLIC) {
+    delete out.api_key;
+    if (out.voice) delete out.voice.tts_api_key;
+  }
+  await mkdir(ctx().dir, { recursive: true });
+  await writeFile(configPath(), JSON.stringify(out, null, 2), "utf8");
 }
 
+// Key 优先级：① 使用者请求头自带的 ② 部署者设的环境变量 ③ 本地 config.json
+// 公网模式下永远不读 config.json —— 那是共用磁盘，不能当凭据用。
 function effectiveApiKey(cfg) {
-  return (process.env.VIVIX_API_KEY || cfg.api_key || "").trim();
+  const fromReq = (ctx().apiKey || "").trim();
+  if (fromReq) return fromReq;
+  const fromEnv = (process.env.VIVIX_API_KEY || "").trim();
+  if (fromEnv) return fromEnv;
+  return IS_PUBLIC ? "" : (cfg?.api_key || "").trim();
+}
+
+// 声线克隆用的凭据（ElevenLabs 那类），优先级同理
+function effectiveVoiceKey(cfg) {
+  const fromReq = (ctx().voiceKey || "").trim();
+  if (fromReq) return fromReq;
+  return IS_PUBLIC ? "" : (cfg?.voice?.tts_api_key || "").trim();
+}
+
+// 没 Key 时候的提示语：公网部署要写清楚"服务端不保存任何人的 Key"
+function missingKeyMessage() {
+  return IS_PUBLIC
+    ? "还没填写你自己的 Vivix API Key。点右上角「设置」，把 Key 填进去 —— 它只存在你这台设备的浏览器里，不会上传到服务器。"
+    : "还没有填写 Vivix API Key，请点右上角「设置」填写，或设置环境变量 VIVIX_API_KEY";
 }
 
 // ---------------- 角色库（characters.json） ----------------
@@ -205,7 +276,7 @@ function defaultCharacterRecord() {
 async function loadLibrary() {
   let lib;
   try {
-    lib = JSON.parse(await readFile(LIBRARY_PATH, "utf8"));
+    lib = JSON.parse(await readFile(libraryPath(), "utf8"));
     if (!lib || !Array.isArray(lib.characters)) throw new Error("格式不对");
   } catch {
     // 首次运行：直接写入内置默认角色（大肥鱼，带完整人设与运镜设定），
@@ -229,7 +300,8 @@ async function loadLibrary() {
 }
 
 async function persistLibrary(lib) {
-  await writeFile(LIBRARY_PATH, JSON.stringify(lib, null, 2), "utf8");
+  await mkdir(ctx().dir, { recursive: true });
+  await writeFile(libraryPath(), JSON.stringify(lib, null, 2), "utf8");
 }
 
 // ---------------- Vivix API ----------------
@@ -276,19 +348,34 @@ function stripKey(obj) {
   return rest;
 }
 
+// 本服务自己对外可访问的地址。
+// 公网部署时这台机器本身就是图床 —— 不再需要把图传到 GitHub。
+function publicBaseUrl(cfg) {
+  const env = (process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
+  if (env) return env;
+  if (IS_PUBLIC) {
+    const c = ctx();
+    if (c.host) return `${c.proto}://${c.host}`;      // 从请求头推，平台反代也能推对
+  }
+  return String(cfg?.public_base_url || "").trim().replace(/\/+$/, "");
+}
+
 // 角色图片必须是公网可访问的 URL（Vivix 服务器要来抓取）
 function resolveImageUrl(cfg) {
   const image = cfg.character.source_image || {};
   const url = (image.url || "").trim();
   if (/^https?:\/\//i.test(url)) return url;
-  const base = (process.env.PUBLIC_BASE_URL || cfg.public_base_url || "").trim().replace(/\/+$/, "");
+  const base = publicBaseUrl(cfg);
   if (!base) {
     throw httpError(
       400,
       "角色图片目前是本机文件，Vivix 服务器抓取不到。二选一：① 在「角色图片」里点「选择照片」，程序会自动传到你的 GitHub 仓库并生成公网地址；② 在 config.json 里填写 public_base_url（本服务部署到公网后的地址）。"
     );
   }
-  return `${base}/${path.basename(url)}`;
+  const name = path.basename(url);
+  // 公网上传的图放在 /assets/uploads/ 下；早期版本放在 /assets/ 根目录，两种都兼容
+  const rel = url.includes("uploads/") || IS_PUBLIC ? `assets/uploads/${name}` : name;
+  return `${base}/${rel}`;
 }
 
 function httpError(status, message, code) {
@@ -461,7 +548,8 @@ function buildSessionBody(cfg, voiceOverride = null) {
   const tts = { tts_voice_id: v.tts_voice_id, payload: { speed: Number(v.speed) || 1 } };
   if (v.tts_provider) tts.tts_provider = v.tts_provider;
   if (v.tts_model_id) tts.tts_model_id = v.tts_model_id;
-  if (v.tts_api_key) tts.tts_api_key = v.tts_api_key;
+  const voiceKey = effectiveVoiceKey(cfg);
+  if (voiceKey) tts.tts_api_key = voiceKey;
 
   const body = {
     model: cfg.model,
@@ -493,26 +581,38 @@ function buildSessionBody(cfg, voiceOverride = null) {
   return body;
 }
 
-// ---------------- 会话状态（本地单会话） ----------------
-let sessionId = null;
-let starting = false;
+// ---------------- 会话状态（按使用者隔离） ----------------
+// 公网模式下很多人同时在线，会话 id 绝不能是全局变量 —— 否则会互相抢会话。
+// 本地模式全落到 "__local__" 这一格，行为和改造前一样。
+const clientStates = new Map();
+function state() {
+  const id = ctx().clientId || "__local__";
+  let s = clientStates.get(id);
+  if (!s) {
+    s = { sessionId: null, starting: false, touched: Date.now() };
+    clientStates.set(id, s);
+  }
+  s.touched = Date.now();
+  return s;
+}
 
 async function createSession(cfg, voiceOverride = null) {
+  const st = state();
   const key = effectiveApiKey(cfg);
-  if (!key) throw httpError(400, "还没有填写 Vivix API Key，请点右上角「设置」填写，或设置环境变量 VIVIX_API_KEY");
-  if (starting) throw httpError(409, "正在创建会话，请稍候");
-  starting = true;
+  if (!key) throw httpError(400, missingKeyMessage());
+  if (st.starting) throw httpError(409, "正在创建会话，请稍候");
+  st.starting = true;
   try {
-    if (sessionId) {
+    if (st.sessionId) {
       // 释放上一个残留会话，避免并发上限
       try {
-        await vivix(`/realtime-avatar/sessions/${encodeURIComponent(sessionId)}/close`, { __key: key });
+        await vivix(`/realtime-avatar/sessions/${encodeURIComponent(st.sessionId)}/close`, { __key: key });
       } catch { /* 忽略旧会话关闭失败 */ }
-      sessionId = null;
+      st.sessionId = null;
       await new Promise((r) => setTimeout(r, 1200));
     }
     const data = await vivix("/realtime-avatar/sessions", { ...buildSessionBody(cfg, voiceOverride), __key: key });
-    sessionId = data.session_id;
+    st.sessionId = data.session_id;
     return {
       session_id: data.session_id,
       model: data.model,
@@ -523,15 +623,16 @@ async function createSession(cfg, voiceOverride = null) {
       delivery: data.delivery
     };
   } finally {
-    starting = false;
+    st.starting = false;
   }
 }
 
 async function closeSession(cfg) {
+  const st = state();
   const key = effectiveApiKey(cfg);
-  if (!sessionId) return { status: "closed" };
-  const id = sessionId;
-  sessionId = null;
+  if (!st.sessionId) return { status: "closed" };
+  const id = st.sessionId;
+  st.sessionId = null;
   if (!key) return { status: "closed" };
   const result = await vivix(`/realtime-avatar/sessions/${encodeURIComponent(id)}/close`, { __key: key });
   return { status: result.status };
@@ -556,22 +657,19 @@ function lanIPv4s() {
   return out;
 }
 
-const CERT_DIR = path.join(DATA_ROOT, "certs");
-const CERT_KEY = path.join(CERT_DIR, "key.pem");
-const CERT_CRT = path.join(CERT_DIR, "cert.pem");
-const CERT_META = path.join(CERT_DIR, "meta.json");
+const CERT_META = path.join(DATA_ROOT, "certs", "meta.json");
 
 // 自签证书：手机通过 https 打开时浏览器才允许调用麦克风（http 的局域网地址会被禁用麦克风）
 async function ensureCert(ips) {
   const want = JSON.stringify([...ips].sort());
   try {
     const meta = JSON.parse(await readFile(CERT_META, "utf8"));
-    if (meta.want === want && existsSync(CERT_KEY) && existsSync(CERT_CRT)) {
+    if (meta.want === want && existsSync(certKeyPath()) && existsSync(certCrtPath())) {
       return { ok: true, generated: false };
     }
   } catch { /* 需要重新生成 */ }
   try {
-    await mkdir(CERT_DIR, { recursive: true });
+    await mkdir(certDir(), { recursive: true });
     const altNames = [
       { type: 2, value: "localhost" },
       { type: 7, ip: "127.0.0.1" },
@@ -583,8 +681,8 @@ async function ensureCert(ips) {
       algorithm: "sha256",
       extensions: [{ name: "subjectAltName", altNames }]
     });
-    await writeFile(CERT_KEY, pems.private, "utf8");
-    await writeFile(CERT_CRT, pems.cert, "utf8");
+    await writeFile(certKeyPath(), pems.private, "utf8");
+    await writeFile(certCrtPath(), pems.cert, "utf8");
     await writeFile(CERT_META, JSON.stringify({ want, ips, created_at: new Date().toISOString() }, null, 2), "utf8");
     return { ok: true, generated: true };
   } catch (e) {
@@ -672,7 +770,65 @@ const netState = { httpsReady: false, certGenerated: false, certError: "", https
 // 启动时填充的实际监听信息（/netinfo 要回给前端真实的端口，而不是配置文件里的值）
 const RUNTIME = { host: "0.0.0.0", port: 3000, httpsPort: 3443 };
 
+// ---------------- 每请求上下文：认出是谁 + 收下他自己的 Key ----------------
+const COOKIE_NAME = "cg_cid";
+const SAFE_ID = /^[A-Za-z0-9_-]{8,64}$/; // clientId 会当目录名用，必须挡掉 ../ 之类
+
+function readCookie(header, name) {
+  if (!header) return "";
+  for (const part of String(header).split(";")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return "";
+}
+
+function buildCtx(req, secure) {
+  const c = newCtx();
+  c.secure = secure;
+  const proto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  c.proto = proto || (secure ? "https" : "http");
+  c.host = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+
+  // 使用者自带的 Key：只在这次请求的内存里用一下，不进任何文件
+  c.apiKey = String(req.headers["x-vivix-key"] || "").trim();
+  c.voiceKey = String(req.headers["x-voice-key"] || "").trim();
+
+  if (IS_PUBLIC) {
+    let cid = readCookie(req.headers.cookie, COOKIE_NAME);
+    if (!SAFE_ID.test(cid)) cid = randomUUID().replace(/-/g, "");
+    c.clientId = cid;
+    c.dir = path.join(CLIENTS_DIR, cid);
+  }
+  return c;
+}
+
+// 公网模式把 clientId 种进 cookie，刷新 / 重开浏览器还能找回自己的角色和设置
+function ensureClientCookie(req, res, c) {
+  if (!IS_PUBLIC || !c.clientId) return;
+  if (readCookie(req.headers.cookie, COOKIE_NAME) === c.clientId) return;
+  res.setHeader(
+    "Set-Cookie",
+    `${COOKIE_NAME}=${c.clientId}; Path=/; Max-Age=${CLIENT_TTL_DAYS * 86400}; SameSite=Lax`
+  );
+}
+
 async function handle(req, res, secure) {
+  const c = buildCtx(req, secure);
+  // 公网部署的基础防护：不允许被别的站套框架、不允许内容类型嗅探
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  if (IS_PUBLIC) res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  // 必须把整个处理流程（含里面的 await）都放进 run 的回调，
+  // AsyncLocalStorage 才会沿着 await 链一路传下去。
+  return ctxStore.run(c, async () => {
+    ensureClientCookie(req, res, c);
+    return handleInner(req, res, secure);
+  });
+}
+
+async function handleInner(req, res, secure) {
   const url = new URL(req.url, "http://localhost");
   try {
     // ---- 设置读写 ----
@@ -681,11 +837,12 @@ async function handle(req, res, secure) {
       const key = effectiveApiKey(cfg);
       const { api_key, ...safe } = cfg;
       const voice = { ...safe.voice };
-      const voiceKeySet = Boolean(voice.tts_api_key);
+      const voiceKeySet = Boolean(effectiveVoiceKey(cfg));
       delete voice.tts_api_key;
       safe.voice = voice;
       return send(res, 200, {
         ok: true,
+        mode: IS_PUBLIC ? "public" : "local",
         env_key: Boolean(process.env.VIVIX_API_KEY),
         api_key_set: Boolean(key),
         api_key_hint: key ? `••••${key.slice(-4)}` : "",
@@ -697,11 +854,16 @@ async function handle(req, res, secure) {
       const patch = await readBody(req);
       const cfg = await loadConfig();
       const { api_key, clear_api_key, voice_key, clear_voice_key, ...rest } = patch || {};
-      if (clear_api_key) cfg.api_key = "";
-      else if (typeof api_key === "string" && api_key.trim() && !api_key.includes("••••")) cfg.api_key = api_key.trim();
+      // 公网模式：Key 由使用者浏览器自己保管，服务端收到也直接丢掉，绝不写盘
+      if (!IS_PUBLIC) {
+        if (clear_api_key) cfg.api_key = "";
+        else if (typeof api_key === "string" && api_key.trim() && !api_key.includes("••••")) cfg.api_key = api_key.trim();
+      }
       cfg.voice = cfg.voice || {};
-      if (clear_voice_key) cfg.voice.tts_api_key = "";
-      else if (typeof voice_key === "string" && voice_key.trim() && !voice_key.includes("••••")) cfg.voice.tts_api_key = voice_key.trim();
+      if (!IS_PUBLIC) {
+        if (clear_voice_key) cfg.voice.tts_api_key = "";
+        else if (typeof voice_key === "string" && voice_key.trim() && !voice_key.includes("••••")) cfg.voice.tts_api_key = voice_key.trim();
+      }
       const merged = deepMerge(cfg, rest || {});
       await persistConfig(merged);
       return send(res, 200, { ok: true });
@@ -824,7 +986,7 @@ async function handle(req, res, secure) {
       return send(res, 200, { ok: true, cloned, notice });
     }
 
-    // ---- 局域网信息 ----
+    // ---- 运行环境信息（本机自用：局域网地址；公网部署：对外网址）----
     if (req.method === "GET" && url.pathname === "/netinfo") {
       const cfg = await loadConfig();
       const port = RUNTIME.port;
@@ -836,8 +998,10 @@ async function handle(req, res, secure) {
         http: `http://${x.address}:${port}`,
         https: netState.httpsReady ? `https://${x.address}:${httpsPort}` : ""
       }));
+      const base = publicBaseUrl(cfg);
       return send(res, 200, {
         ok: true,
+        mode: IS_PUBLIC ? "public" : "local",
         secure,
         port,
         https_port: httpsPort,
@@ -847,11 +1011,15 @@ async function handle(req, res, secure) {
         lan_access: cfg.lan_access !== false,
         hostname: os.hostname(),
         lan,
-        local: `http://localhost:${port}`
+        local: `http://localhost:${port}`,
+        // 公网部署时对外可访问的地址（前端拿去展示、也用于拼图片直链）
+        public_url: IS_PUBLIC ? base : ""
       });
     }
 
-    // ---- 上传角色照片：本地留存 + 发布到 GitHub 生成公网地址 ----
+    // ---- 上传角色照片 ----
+    //   本机自用：存本地 + 传到用户的 GitHub 换公网 raw 链接
+    //   公网部署：存本地就够了 —— 这台机器本身就是公网可访问的图床，不再依赖 GitHub
     if (req.method === "POST" && url.pathname === "/upload") {
       const body = await readBody(req, 24 * 1024 * 1024);
       const m = /^data:(image\/(png|jpeg|jpg|webp));base64,([A-Za-z0-9+/=\s]+)$/i.exec(body.data || "");
@@ -862,12 +1030,28 @@ async function handle(req, res, secure) {
       if (!buf.length) throw httpError(400, "图片内容为空");
       if (buf.length > 12 * 1024 * 1024) throw httpError(413, "图片太大了（请小于 12MB）");
 
-      await mkdir(UPLOAD_DIR, { recursive: true });
-      const name = `${Date.now()}.${ext}`;
-      const localPath = path.join(UPLOAD_DIR, name);
+      // 公网部署：公共上传目录（Vivix 来抓图时不带 cookie，必须能匿名取到）；
+      // 文件名用随机 UUID，别人猜不到。
+      // 本机自用：还是放在自己的目录里，保持原样。
+      const dir = IS_PUBLIC ? publicUploadDir() : uploadDir();
+      await mkdir(dir, { recursive: true });
+      const name = IS_PUBLIC ? `${randomUUID().replace(/-/g, "")}.${ext}` : `${Date.now()}.${ext}`;
+      const localPath = path.join(dir, name);
       await writeFile(localPath, buf);
 
-      const { publicUrl, verified, repo } = await publishImage(localPath, name);
+      let publicUrl;
+      let verified;
+      let repo;
+      if (IS_PUBLIC) {
+        const base = publicBaseUrl(await loadConfig());
+        if (!base) throw httpError(500, "没能确定本服务的公网地址，请给服务设置 PUBLIC_BASE_URL 环境变量");
+        publicUrl = `${base}/assets/uploads/${encodeURIComponent(name)}`;
+        // 自己访问一下，确认真能打开再交给 Vivix（省得报一个莫名其妙的错误）
+        verified = await waitForPublic(publicUrl, 3, 500);
+        repo = "(本服务)";
+      } else {
+        ({ publicUrl, verified, repo } = await publishImage(localPath, name));
+      }
 
       const cfg = await loadConfig();
       cfg.character.source_image.url = publicUrl;
@@ -881,9 +1065,13 @@ async function handle(req, res, secure) {
         url: publicUrl,
         verified,
         repo,
-        preview: `/assets/uploads/${name}`,
+        preview: `/assets/uploads/${encodeURIComponent(name)}`,
         local_path: `assets/uploads/${name}`,
-        note: verified ? "公网地址已生效" : "已上传，公网地址生效中（通常几秒内可用）"
+        note: verified
+          ? "公网地址已生效"
+          : IS_PUBLIC
+            ? "已上传。如果稍后 Vivix 提示抓不到图，检查一下这个服务是否真的能被外网访问"
+            : "已上传，公网地址生效中（通常几秒内可用）"
       });
     }
 
@@ -920,8 +1108,21 @@ async function handle(req, res, secure) {
       return send(res, 200, { ok: true, ...info });
     }
 
+    // ---- 健康检查（Render / Fly / Railway 等平台用来判断服务是否活着）----
+    if (req.method === "GET" && url.pathname === "/health") {
+      return send(res, 200, {
+        ok: true,
+        mode: IS_PUBLIC ? "public" : "local",
+        version: APP_VERSION,
+        uptime_seconds: Math.round(process.uptime()),
+        clients: clientStates.size
+      });
+    }
+
     // ---- 退出服务（供「关闭.cmd」调用）----
+    // 公网部署时这个口子是危险的：谁都能把服务关掉。直接禁掉。
     if (req.method === "POST" && url.pathname === "/shutdown") {
+      if (IS_PUBLIC) throw httpError(403, "公网部署模式下不允许远程关闭服务");
       send(res, 200, { ok: true });
       setTimeout(() => process.exit(0), 150);
       return;
@@ -943,11 +1144,20 @@ async function handle(req, res, secure) {
         // 仅允许 assets/ 根目录（程序自带，只读）与 assets/uploads/（用户上传，可写），防止路径穿越
         if (rel.includes("/")) {
           if (!rel.startsWith("uploads/")) return send(res, 404, { error: "Not Found" });
-          try {
-            return send(res, 200, await readFile(path.join(UPLOAD_DIR, name)), ASSET_TYPES[ext]);
-          } catch {
-            return send(res, 404, { error: "文件不存在" });
+          // 依次找：自己上传的 → 公网公共上传的 → 程序自带的（磁盘 ROOT）→ 内嵌进二进制的
+          // 这几处跟 repairLocalPath 认领本地副本的范围必须一致，否则会出现
+          // "配置里写了本地路径、但访问不到" 的破图。
+          for (const dir of [uploadDir(), publicUploadDir(), path.join(ROOT, "assets", "uploads")]) {
+            try {
+              return send(res, 200, await readFile(path.join(dir, name)), ASSET_TYPES[ext]);
+            } catch { /* 换下一个目录找 */ }
           }
+          for (const alt of [`assets/uploads/${name}`, `assets/${name}`]) {
+            try {
+              return send(res, 200, await readAsset(alt), ASSET_TYPES[ext]);
+            } catch { /* 换下一个 */ }
+          }
+          return send(res, 404, { error: "文件不存在" });
         }
         try {
           return send(res, 200, await readAsset(`assets/${name}`), ASSET_TYPES[ext]);
@@ -976,30 +1186,76 @@ function openBrowser(url) {
   } catch { /* 打不开浏览器不影响服务 */ }
 }
 
+// ---------------- 公网实例的磁盘清理 ----------------
+// 每个人一份数据，久了会把磁盘占满。把超过 TTL 没人访问的客户端目录删掉。
+async function sweepClients() {
+  let names;
+  try {
+    names = await readdir(CLIENTS_DIR);
+  } catch {
+    return 0;
+  }
+  const cutoff = Date.now() - CLIENT_TTL_DAYS * 86400 * 1000;
+  let removed = 0;
+  for (const n of names) {
+    const dir = path.join(CLIENTS_DIR, n);
+    try {
+      const st = await stat(dir);
+      if (st.mtimeMs < cutoff) {
+        await rm(dir, { recursive: true, force: true });
+        clientStates.delete(n);
+        removed++;
+      }
+    } catch { /* 单项失败不影响其他 */ }
+  }
+  if (removed) console.log(`  已清理 ${removed} 份过期数据（${CLIENT_TTL_DAYS} 天没人访问）`);
+  return removed;
+}
+
 // ---------------- 启动 ----------------
 async function main() {
-  await mkdir(UPLOAD_DIR, { recursive: true });
-  await mkdir(CERT_DIR, { recursive: true });
-
   const cfg0 = await loadConfig();
-  const HOST = (process.env.HOST || (cfg0.lan_access === false ? "127.0.0.1" : cfg0.host) || "0.0.0.0").trim();
+  const HOST = (process.env.HOST || (IS_PUBLIC ? "0.0.0.0" : cfg0.lan_access === false ? "127.0.0.1" : cfg0.host) || "0.0.0.0").trim();
   const PORT = Number(process.env.PORT || cfg0.port || 3000);
-  const HTTPS_PORT = Number(process.env.HTTPS_PORT || cfg0.https_port || 3443);
   RUNTIME.host = HOST;
   RUNTIME.port = PORT;
-  RUNTIME.httpsPort = HTTPS_PORT;
 
-  const ips = lanIPv4s().map((x) => x.address);
-  const cert = await ensureCert(ips);
-  netState.httpsReady = cert.ok;
-  netState.certGenerated = Boolean(cert.generated);
-  netState.certError = cert.ok ? "" : cert.error || "证书生成失败";
-  netState.httpsPort = HTTPS_PORT;
-  if (netState.httpsReady && cert.generated) console.log("  已生成本机自签证书（供手机 https 访问使用）");
+  const ips = [];
+  if (!IS_PUBLIC) {
+    await mkdir(uploadDir(), { recursive: true });
+    await mkdir(certDir(), { recursive: true });
+
+    // 自签证书：手机用 https 打开时浏览器才允许开麦。
+    // 公网部署不需要 —— 平台（Render/Fly/...）已经给了正规 HTTPS。
+    const HTTPS_PORT = Number(process.env.HTTPS_PORT || cfg0.https_port || 3443);
+    RUNTIME.httpsPort = HTTPS_PORT;
+    ips.push(...lanIPv4s().map((x) => x.address));
+    const cert = await ensureCert(ips);
+    netState.httpsReady = cert.ok;
+    netState.certGenerated = Boolean(cert.generated);
+    netState.certError = cert.ok ? "" : cert.error || "证书生成失败";
+    netState.httpsPort = HTTPS_PORT;
+    if (netState.httpsReady && cert.generated) console.log("  已生成本机自签证书（供手机 https 访问使用）");
+  } else {
+    await mkdir(CLIENTS_DIR, { recursive: true });
+    await mkdir(publicUploadDir(), { recursive: true });
+    await sweepClients();
+    setInterval(sweepClients, 6 * 60 * 60 * 1000).unref();
+  }
 
   const server = http.createServer((req, res) => handle(req, res, false));
   server.listen(PORT, HOST, () => {
     console.log("");
+    if (IS_PUBLIC) {
+      console.log(`  赛博女友 已启动（公网模式 v${APP_VERSION}）`);
+      console.log("  · 监听：   " + HOST + ":" + PORT);
+      console.log("  · API Key：由每位使用者自带（浏览器本地保存，服务端不落盘）");
+      console.log("  · 数据目录：" + DATA_ROOT);
+      const base = (process.env.PUBLIC_BASE_URL || "").trim();
+      console.log("  · 对外网址：" + (base || "未设 PUBLIC_BASE_URL，将按请求头自动推断"));
+      console.log("");
+      return;
+    }
     console.log("  赛博女友 已启动" + (IS_SEA ? "（独立版）" : ""));
     console.log("  · 本机：  http://localhost:" + PORT);
     if (HOST === "0.0.0.0") {
@@ -1009,7 +1265,7 @@ async function main() {
       console.log("  · 当前只监听本机（config.json 里 lan_access / host 可打开局域网访问）");
     }
     if (netState.httpsReady) {
-      for (const ip of ips) console.log("  · 手机开麦：  https://" + ip + ":" + HTTPS_PORT + "  （首次会提示证书不受信任，点「继续访问」即可）");
+      for (const ip of ips) console.log("  · 手机开麦：  https://" + ip + ":" + RUNTIME.httpsPort + "  （首次会提示证书不受信任，点「继续访问」即可）");
     } else {
       console.log("  · 手机开麦所需的 https 没起来：" + netState.certError);
     }
@@ -1019,15 +1275,15 @@ async function main() {
     if (process.env.NO_OPEN !== "1") openBrowser(`http://localhost:${PORT}`);
   });
 
-  if (netState.httpsReady) {
+  if (!IS_PUBLIC && netState.httpsReady) {
     try {
       const tls = {
-        key: await readFile(CERT_KEY, "utf8"),
-        cert: await readFile(CERT_CRT, "utf8")
+        key: await readFile(certKeyPath(), "utf8"),
+        cert: await readFile(certCrtPath(), "utf8")
       };
       const httpsServer = https.createServer(tls, (req, res) => handle(req, res, true));
-      httpsServer.listen(HTTPS_PORT, HOST, () => {
-        console.log("  HTTPS 已监听 " + HTTPS_PORT + " 端口（手机在此地址上可以开麦）");
+      httpsServer.listen(RUNTIME.httpsPort, HOST, () => {
+        console.log("  HTTPS 已监听 " + RUNTIME.httpsPort + " 端口（手机在此地址上可以开麦）");
       });
       httpsServer.on("error", (e) => {
         netState.httpsReady = false;

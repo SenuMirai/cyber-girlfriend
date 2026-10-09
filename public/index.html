@@ -130,7 +130,7 @@
           <section class="form-block">
             <h3>模型与密钥</h3>
             <label class="field">
-              <span>Vivix API Key</span>
+              <span id="api-key-label">Vivix API Key</span>
               <input id="cfg-api-key" type="password" placeholder="粘贴 API Key" autocomplete="off" />
               <small id="api-key-state"></small>
             </label>
@@ -320,23 +320,25 @@
           </section>
 
           <section class="form-block">
-            <h3>其他设备访问</h3>
+            <h3 id="net-title">其他设备访问</h3>
             <div id="net-lines" class="net-lines"></div>
             <p class="tip" id="net-tip"></p>
-            <div class="field-row">
-              <label class="field">
-                <span>监听端口（改完要重启）</span>
-                <input id="cfg-port" type="number" min="1024" max="65535" step="1" />
-              </label>
-              <label class="field">
-                <span>HTTPS 端口（改完要重启）</span>
-                <input id="cfg-https-port" type="number" min="1024" max="65535" step="1" />
+            <div id="net-local-opts">
+              <div class="field-row">
+                <label class="field">
+                  <span>监听端口（改完要重启）</span>
+                  <input id="cfg-port" type="number" min="1024" max="65535" step="1" />
+                </label>
+                <label class="field">
+                  <span>HTTPS 端口（改完要重启）</span>
+                  <input id="cfg-https-port" type="number" min="1024" max="65535" step="1" />
+                </label>
+              </div>
+              <label class="check-field">
+                <input id="cfg-lan" type="checkbox" />
+                <span>允许局域网访问（关掉后只有本机能打开）</span>
               </label>
             </div>
-            <label class="check-field">
-              <input id="cfg-lan" type="checkbox" />
-              <span>允许局域网访问（关掉后只有本机能打开）</span>
-            </label>
           </section>
 
           <div class="form-actions">
