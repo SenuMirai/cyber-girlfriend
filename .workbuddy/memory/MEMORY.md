@@ -77,6 +77,18 @@
 `render.yaml`（plan:free）、`.env.example`、**`DEPLOY.md`**（Render/Fly/Railway 点击级教程 + FAQ）。
 **推荐平台 Render**（免费 + 蓝图一键）；Fly.io 不睡觉但要命令行；Railway 免费额度小。
 
+### ✅ 线上实例（2026-10-09 已部署并实测通过）
+- **网址：https://cyber-girlfriend-019x.onrender.com**
+- GitHub 仓库：https://github.com/SenuMirai/cyber-girlfriend （公开，分支 `main`）
+- Render：服务 ID `srv-db4ekdlg1s2s7396f2cg`，workspace `tea-db4ed360tbcc73e3p6l0`，
+  docker / free / **singapore** / healthCheck `/health` / autoDeploy `commit`
+- 环境变量：`CG_PUBLIC=1`、`CG_DATA_DIR=/data`、`CG_CLIENT_TTL_DAYS=30`
+- 部署方式：**用 `gh` 建仓推送 + Render REST API 全自动建服务**（见 2026-10-09 日志里的可复用命令）。
+  **Render 没有出现仓库授权障碍**，`POST /v1/services` 直接 201 —— 以后加服务可全自动，无需手动装 GitHub App。
+- 实测：`/health` mode=public、角色大肥鱼（578 字人设）、内置图 200/157294 B、
+  cookie 隔离下发、`/shutdown` 403、无 Key 给自带 Key 引导、带 Key 确实透传到 Vivix、
+  无头浏览器界面零报错且比例诊断正确。
+
 **免费档两个必须向用户点明的脾气**：① 15 分钟无访问挂起，下次打开转圈 30–60 秒；
 ② 不能挂持久磁盘，重启 `/data` 清空 → 角色会丢（Key 不受影响），对策是「导出/导入角色包」或升付费档挂盘。
 另：这套是**身份 cookie 隔离，不是账号系统**——没密码，换浏览器就是新的一份数据。
