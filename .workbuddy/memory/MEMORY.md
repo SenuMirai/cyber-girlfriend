@@ -40,6 +40,24 @@
   不继承项目配置。当初 DEFAULTS 写的是占位角色「阿甜」且运镜为空 → 用户以为"大肥鱼丢了、字段全空"。
   **改默认值要同时改 DEFAULTS 和内置角色库。**
 
+## 首屏占位图 = 服务端按访问者注入（2026-10-10，别再写死）
+- `public/index.html` 的 `#poster` 是 `src="__POSTER_HTML__"`，`public/style.css` 是
+  `url("__POSTER_CSS__")`；`server.mjs` 的 `renderTemplated()` 发页面前替换成该访问者
+  真正该看到的那张（本地副本 > 公网 URL > 内置大肥鱼），`STATIC_FILES` 第三项 `"tpl"` 标记。
+- **别再用任何一张真实图片当写死的首屏占位图** —— 配置没加载完的那一瞬间它会直接闪出来。
+  历史上 `assets/character.jpg` 就是用户本人的照片，导致"打开一瞬间闪过我的照片"。
+- `__POSTER_CSS__` 要替成**裸地址**（CSS 里已经包了 `url("...")`）。
+- 这两个响应因人而异，必须 `no-store`（`send()` 已经带）。
+
+## 「她说到一半断掉」的根因与解（2026-10-10）
+- Vivix `response.create` 默认 `scheduling_policy: "interrupt"`；她还在说时再来一条请求
+  就把那句拦腰切断，**答案越长越容易撞上**。
+- 解法是客户端排队：`state.speaking` / `responsePending` / `answerQueue`，
+  `requestResponse()` 忙则记账、`endSpeaking()`（在 `response.done`）依次补发；
+  看门狗只在"真的 120 秒没事件"时才兜底放行。「打断」按钮仍即时 `response.cancel`。
+- `response.render.stopped.status`（completed/cancelled/interrupted/failed）与
+  `response.done.status` 以前被静默吞掉 —— 非正常结束现在会在聊天里写一行原因。
+
 ## 硬坑清单
 - **IExpress**：`.sed` 的 `[SourceFiles0]` 每行必须 `%FILE0%=`（末尾等号不能省，少了就静默失败只返回 1）；
   `.sed` 内不能有中文（先输出到 ASCII 临时路径再搬走）；安装包解压临时目录会被清掉，
@@ -57,6 +75,16 @@
 - 给 Node 脚本传临时文件路径别用 Git Bash 的 `/tmp`（Windows 下 node 解析不到），
   写到 `C:/Users/80573/.workbuddy/tmp/` 这种真实盘符路径。
 - 启动/关闭脚本是 GBK 编码，改它们要走「UTF-8 临时文件 → PowerShell 转 GBK」。
+
+- **Render `autoDeploy: commit` 不认 force-push** —— 历史重写后强推不会触发部署，
+  得再补一条普通 commit，或去面板手动部署。（2026-10-10 踩到）
+- **删掉进过 git 的文件，光删文件没用**：commit 历史里还在，公开仓库仍可访问。
+  要用 `git filter-branch --index-filter ... --tag-name-filter cat -- --all` 重写，
+  再清 `refs/original` + `reflog expire --expire=now --all` + `gc --prune=now`，
+  最后 force-push。**GitHub 不会立刻回收不可达 blob，按 SHA 仍能直取**，
+  要 100% 抹掉得走 GitHub Support 或删库重建。
+- **esbuild `--alias:` 能把 `trtc-sdk-v5` 换成桩件**，从而在无头浏览器里驱动真实前端状态机
+  （配 `page.route` 换 app.js + `addInitScript` 桩 WebSocket/`fetch`）。
 
 ## 部署形态：一个程序两种模式（2026-10-09 已实施完成）
 用户拍板 **B 方案：托管平台跑后端**，Key 策略＝「让他们用自己的 key」。
