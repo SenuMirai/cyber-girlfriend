@@ -706,10 +706,46 @@ function hasAsset(rel) {
   return Boolean(EMBEDDED[rel]) || existsSync(path.join(ROOT, rel)) || existsSync(path.join(DATA_ROOT, rel));
 }
 
+// 首屏占位图 = 内置默认角色「大肥鱼」的形象图。
+// 这里**绝对不能**用一张真实照片当默认值 —— 配置还没加载完的那一瞬间它会直接闪出来。
+const DEFAULT_POSTER =
+  "/" + String(DEFAULT_CHARACTER?.character?.source_image?.local_path || "assets/1791525005312.jpg").replace(/^\.?\//, "");
+
+// 首屏该显示哪张人物图。优先级与前端 previewUrlFor 保持一致：本地副本 > 公网 URL > 内置默认图。
+function posterUrlFor(cfg) {
+  const img = cfg?.character?.source_image || {};
+  const local = String(img.local_path || "").trim();
+  if (local && !/^https?:/i.test(local)) return "/" + local.replace(/^\.?\//, "");
+  const url = String(img.url || "").trim();
+  if (url) return /^https?:\/\//i.test(url) ? url : "/" + url.replace(/^\.?\//, "");
+  return DEFAULT_POSTER;
+}
+
+// 首页与样式表都要按「当前访问者」把人物图地址直接注进去，否则浏览器会先画出
+// 别人（或内置默认）的图，等 /config 回来才切换，看起来就是"闪一下别人的照片"。
+// 连带后果：这两个响应因人而异，必须禁止进任何共享缓存（send() 已经带 no-store）。
+async function renderTemplated(rel) {
+  const raw = (await readAsset(rel)).toString("utf8");
+  let poster = DEFAULT_POSTER;
+  try {
+    poster = posterUrlFor(await loadConfig());
+  } catch {
+    /* 配置读不出来就退到内置默认图 */
+  }
+  // 这个值会被写进 HTML 属性与 CSS 的 url(...)，先把能破坏这两处语法的字符剃掉
+  const clean = poster.replace(/[\u0000-\u001f"'()\\<>]/g, "");
+  // __POSTER_HTML__ 是裸地址（用在属性里，& 要转义）；
+  // __POSTER_CSS__ 已经在 url("...") 里面了，只能替成裸地址，别再包一层。
+  let out = raw.split("__POSTER_HTML__").join(clean.replace(/&/g, "&amp;"));
+  out = out.split("__POSTER_CSS__").join(clean);
+  return Buffer.from(out, "utf8");
+}
+
+// 值 = [资源相对路径, MIME]；值为 "tpl" 表示这份资源要先过模板替换再发出去
 const STATIC_FILES = {
-  "/": ["public/index.html", "text/html; charset=utf-8"],
-  "/index.html": ["public/index.html", "text/html; charset=utf-8"],
-  "/style.css": ["public/style.css", "text/css; charset=utf-8"],
+  "/": ["public/index.html", "text/html; charset=utf-8", "tpl"],
+  "/index.html": ["public/index.html", "text/html; charset=utf-8", "tpl"],
+  "/style.css": ["public/style.css", "text/css; charset=utf-8", "tpl"],
   "/app.js": ["public/app.js", "text/javascript; charset=utf-8"]
 };
 const ASSET_TYPES = {
@@ -1135,7 +1171,10 @@ async function handleInner(req, res, secure) {
         return res.end();
       }
       const file = STATIC_FILES[url.pathname];
-      if (file) return send(res, 200, await readAsset(file[0]), file[1]);
+      if (file) {
+        const body = file[2] === "tpl" ? await renderTemplated(file[0]) : await readAsset(file[0]);
+        return send(res, 200, body, file[1]);
+      }
       if (url.pathname.startsWith("/assets/")) {
         const rel = url.pathname.slice("/assets/".length);
         const name = path.basename(rel);

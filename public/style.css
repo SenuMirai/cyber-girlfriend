@@ -2,7 +2,7 @@
 :root {
   --stage-r: 0.5625; /* 画幅宽高比 9:16（JS 会按设置更新） */
   --col-w: min(100vw, calc(100dvh * var(--stage-r)));
-  --poster-url: url("/assets/character.jpg");
+  --poster-url: url("__POSTER_CSS__");
 
   --text: #f5f5f7;
   --text-dim: rgba(245, 245, 247, 0.6);

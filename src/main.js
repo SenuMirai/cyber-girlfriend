@@ -153,6 +153,15 @@ const state = {
   pendingItems: new Set(),
   resumes: new Set(),
   seq: 0,
+  // 「她正在说」+ 待回答队列。
+  // 起因：新消息默认会打断她正在说的那句（Vivix 的 scheduling_policy 默认就是 interrupt），
+  // 答案越长越容易被下一句话拦腰截断。所以在她说话时收到的新消息先排队，等这句说完再依次回答。
+  speaking: false,
+  speakingSince: 0,
+  responsePending: false,
+  answerQueue: 0,
+  userCancelled: false,
+  speakingWatchdog: null,
   expiryTimer: null,
   cfg: null,
   mode: "local", // local=本机自用 / public=公网部署
@@ -180,13 +189,19 @@ function currentOutputRatio() {
   return ratioOf(state.cfg?.output?.aspect_ratio || "9:16");
 }
 
+// 首屏人物图：服务端发首页时，已经把「当前访问者该看到的那张」直接写进了 #poster 的 src。
+// 这里沿用它，任何情况下都不会先闪一张别的图；万一读不到就退回内置默认角色（大肥鱼）的形象图。
+function defaultPosterUrl() {
+  return els.poster?.src || "/assets/1791525005312.jpg";
+}
+
 // 本地文件优先（GitHub raw 在国内经常打不开，预览用本地那份最稳）
 function previewUrlFor(image) {
-  if (!image) return "/assets/character.jpg";
+  if (!image) return defaultPosterUrl();
   const local = (image.local_path || "").trim();
   if (local && !/^https?:/i.test(local)) return "/" + local.replace(/^\.?\//, "");
   const url = (image.url || "").trim();
-  if (!url) return "/assets/character.jpg";
+  if (!url) return defaultPosterUrl();
   return /^https?:\/\//i.test(url) ? url : "/" + url.replace(/^\.?\//, "");
 }
 
@@ -1112,6 +1127,50 @@ function wsSend(obj) {
   return true;
 }
 
+/* 她开始/结束说话。说话期间收到的新消息不打断她，先排队（见 requestResponse）。 */
+function beginSpeaking() {
+  state.speaking = true;
+  state.responsePending = false;
+  armSpeakingWatchdog();
+}
+
+// 保命：万一终止事件丢了，别让"正在说"永远卡住、后面消息排不上队。
+// 只要有事件进来就重新计时，所以只有"真的 120 秒没声音"才会兜底放行。
+function armSpeakingWatchdog() {
+  state.speakingSince = Date.now();
+  clearTimeout(state.speakingWatchdog);
+  state.speakingWatchdog = setTimeout(() => {
+    if (state.speaking && Date.now() - state.speakingSince >= 120000) endSpeaking();
+  }, 120000);
+}
+
+function endSpeaking() {
+  state.speaking = false;
+  state.speakingSince = 0;
+  state.responsePending = false;
+  clearTimeout(state.speakingWatchdog);
+  state.speakingWatchdog = null;
+  drainAnswerQueue();
+}
+
+/* 请她回答。她正说着、或上一条请求刚发出还没起来，就先记一笔排队，绝不叠着发 ——
+   叠着发第二句对 Vivix 来说是 interrupt，会把她正在说的那句拦腰切断。 */
+function requestResponse() {
+  if (state.speaking || state.responsePending) {
+    state.answerQueue += 1;
+    return;
+  }
+  state.responsePending = true;
+  wsSend({ type: "response.create" });
+}
+
+function drainAnswerQueue() {
+  if (state.answerQueue <= 0 || state.speaking || state.responsePending) return;
+  state.answerQueue -= 1;
+  state.responsePending = true;
+  wsSend({ type: "response.create" });
+}
+
 function connectControl(info) {
   return new Promise((resolve, reject) => {
     const url = new URL(info.control.url);
@@ -1144,6 +1203,7 @@ function connectControl(info) {
       }
     };
     ws.onmessage = ({ data }) => {
+      if (state.speaking) armSpeakingWatchdog(); // 还在吐事件 = 她还在说，别让看门狗误伤
       let evt;
       try {
         evt = JSON.parse(data);
@@ -1159,14 +1219,15 @@ function handleServerEvent(evt) {
   const rid = evt.response_id || evt.response?.id;
   switch (evt.type) {
     case "conversation.item.created":
-      // 文字消息已入库 → 请求她回答
+      // 文字消息已入库 → 请她回答（她正说着就排队，不打断）
       if (evt.item?.id && state.pendingItems.has(evt.item.id)) {
         state.pendingItems.delete(evt.item.id);
-        wsSend({ type: "response.create" });
+        requestResponse();
       }
       break;
 
     case "response.created":
+      beginSpeaking();
       if (state.pendingOpeningRoute && rid) {
         state.pendingOpeningRoute = false;
         if (state.openingBubble) state.responseRoute.set(rid, state.openingBubble);
@@ -1189,16 +1250,25 @@ function handleServerEvent(evt) {
       break;
     }
 
-    case "response.done":
+    case "response.done": {
       finishBubble(routeBubble(rid));
       els.speakingTip.hidden = true;
+      reportResponseOutcome(evt);
+      endSpeaking();
       break;
+    }
 
     case "response.render.started":
+      beginSpeaking();
       els.speakingTip.hidden = false;
       break;
 
     case "response.render.stopped":
+      // status: completed / cancelled / interrupted / failed
+      // 不是我们主动打断的 interrupted，就是"说到一半被掐了"的直接证据
+      if (evt.status && evt.status !== "completed" && !state.userCancelled && evt.status !== "cancelled") {
+        addMessage("system", `（这次被打断在渲染阶段：${evt.status}）`);
+      }
       els.speakingTip.hidden = true;
       break;
 
@@ -1216,6 +1286,8 @@ function handleServerEvent(evt) {
     case "error": {
       const msg = evt.error?.message || evt.message || "未知错误";
       if (evt.error?.code === "response_not_active" || /no active response/i.test(msg)) break; // 打断时空响应，忽略
+      // 请求被服务端拒了：把"忙"状态放掉，别让后面的消息永远排不上队
+      if (state.responsePending && !state.speaking) endSpeaking();
       toast(`服务端提示：${msg}`, { error: true });
       break;
     }
@@ -1223,6 +1295,26 @@ function handleServerEvent(evt) {
     default:
       break; // 前向兼容：忽略未知事件
   }
+}
+
+// 回答没说完时，把 Vivix 给的原因如实贴出来（以前是静默吞掉的，所以只能靠猜）
+function reportResponseOutcome(evt) {
+  const status = evt.response?.status || "";
+  const cancelledByUser = state.userCancelled;
+  state.userCancelled = false;
+  if (!status || status === "completed" || cancelledByUser) return;
+  let detail = "";
+  const d = evt.response?.status_details;
+  if (d) detail = typeof d === "string" ? d : d.reason || d.type || JSON.stringify(d);
+  const why =
+    status === "incomplete"
+      ? "输出被截断了"
+      : status === "cancelled"
+        ? "被取消了"
+        : status === "failed"
+          ? "生成失败"
+          : status;
+  addMessage("system", `（这次回答${why}：${status}${detail ? " · " + detail : ""}）`);
 }
 
 function routeBubble(rid) {
@@ -1402,6 +1494,13 @@ function resetToIdle({ keepChat = true, system = "" } = {}) {
   state.pendingOpeningRoute = false;
   state.voiceTest = null;
   clearTimeout(state.openingFallback);
+  clearTimeout(state.speakingWatchdog);
+  state.speaking = false;
+  state.speakingSince = 0;
+  state.responsePending = false;
+  state.answerQueue = 0;
+  state.userCancelled = false;
+  state.speakingWatchdog = null;
   state.responseRoute.clear();
   state.pendingItems.clear();
   state.resumes.clear();
@@ -1485,6 +1584,8 @@ function sendText() {
       content: [{ type: "input_text", text }]
     }
   });
+  // 她正说着的话，这句会排队等她说完 —— 输入框清空了就给她一个"收到了"的反馈
+  if (state.speaking) toast("她说完这句就回你（排队中）", { duration: 2000 });
 }
 
 /* ================= 事件绑定 ================= */
@@ -1494,11 +1595,17 @@ els.hangupBtn.addEventListener("click", () => hangup());
 els.micBtn.addEventListener("click", () => toggleMic());
 els.sendBtn.addEventListener("click", sendText);
 els.input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.isComposing) sendText();
+  // 中文输入法下回车是「选字」不是「发送」。有些 Windows 输入法最后一击时 isComposing
+  // 已经是 false，所以还要一并看 keyCode 229 —— 否则会多发一条空消息，把她的回答打断。
+  if (e.key !== "Enter" || e.isComposing || e.keyCode === 229 || e.shiftKey) return;
+  e.preventDefault();
+  sendText();
 });
 els.interruptBtn.addEventListener("click", () => {
+  state.userCancelled = true; // 是用户主动打断的，别把原因当成"被掐断"报出来
   wsSend({ type: "response.cancel" });
   els.speakingTip.hidden = true;
+  endSpeaking();
 });
 els.enableSound.addEventListener("click", async () => {
   try {

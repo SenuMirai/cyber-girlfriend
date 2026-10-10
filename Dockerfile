@@ -30,8 +30,7 @@ COPY --from=build /app/server.mjs ./
 COPY --from=build /app/src ./src
 COPY --from=build /app/public ./public
 COPY --from=build /app/defaults ./defaults
-# 程序自带的默认形象图（大肥鱼）和占位图
-COPY --from=build /app/assets/character.jpg ./assets/character.jpg
+# 程序自带的默认形象图（大肥鱼，同时用作首屏占位图）
 COPY --from=build /app/assets/1791525005312.jpg ./assets/1791525005312.jpg
 
 # 数据目录（平台挂持久磁盘时指向这里）
